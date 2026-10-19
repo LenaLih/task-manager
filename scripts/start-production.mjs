@@ -48,9 +48,13 @@ export async function startProduction({ env = process.env, launch = spawn, probe
     if (stopping) return
     stopping = true
     controller.abort()
-    for (const child of children) child.kill('SIGTERM')
+    console.log(`[production] stopping; requested exit=${code}`)
+    for (const child of children) {
+      if (child.kill('SIGTERM')) child.shutdownSignal = 'SIGTERM'
+    }
     const timer = setTimeout(() => {
       exitCode = 1
+      console.error('[production] shutdown deadline exceeded; sending SIGKILL')
       for (const child of children) child.kill('SIGKILL')
     }, shutdownMs)
     timer.unref()
@@ -59,12 +63,20 @@ export async function startProduction({ env = process.env, launch = spawn, probe
       finish()
     })
   }
-  const onSignal = () => stop(0)
-  signals.on('SIGTERM', onSignal)
-  signals.on('SIGINT', onSignal)
+  const onSignal = (signal) => {
+    console.log(`[production] received ${signal}`)
+    stop(0)
+  }
+  const onTerm = () => onSignal('SIGTERM')
+  const onInt = () => onSignal('SIGINT')
+  signals.on('SIGTERM', onTerm)
+  signals.on('SIGINT', onInt)
   function run(args, childEnv, persistent = false) {
     if (stopping) throw new Error('Startup cancelled')
     const child = launch(process.execPath, args, { stdio: 'inherit', env: childEnv })
+    const name = args[0].includes('migrate') ? 'migrations'
+      : args[0] === 'dist-server/index.js' ? 'express' : 'next'
+    console.log(`[production] starting ${name}`)
     children.add(child)
     child.completion = new Promise((resolveChild) => {
       let completed = false
@@ -76,8 +88,21 @@ export async function startProduction({ env = process.env, launch = spawn, probe
         resolveChild(code)
         if (!stopping && (persistent || code !== 0)) stop(1)
       }
-      child.once('error', () => complete(1))
-      child.once('exit', (code, signal) => complete(code ?? (signal === 'SIGTERM' ? 0 : 1)))
+      child.once('error', () => {
+        console.error(`[production] ${name} process error`)
+        complete(1)
+      })
+      child.once('exit', (code, signal) => {
+        // Next 16 completes cleanup by exiting 128 + SIGTERM (143), rather than 0.
+        // Accept this only for our own shutdown; an unsolicited exit remains fatal.
+        const expectedNextExit = name === 'next' && stopping
+          && child.shutdownSignal === 'SIGTERM' && code === 143
+        const expectedSignal = stopping && child.shutdownSignal === 'SIGTERM'
+          && signal === 'SIGTERM'
+        const normalized = expectedNextExit || expectedSignal ? 0 : (code ?? 1)
+        console.log(`[production] ${name} exited; code=${code ?? 'null'}; signal=${signal ?? 'none'}; expectedShutdown=${expectedNextExit || expectedSignal}`)
+        complete(normalized)
+      })
     })
     return child
   }
@@ -110,8 +135,9 @@ export async function startProduction({ env = process.env, launch = spawn, probe
     }
   }
   await finished
-  signals.off('SIGTERM', onSignal)
-  signals.off('SIGINT', onSignal)
+  signals.off('SIGTERM', onTerm)
+  signals.off('SIGINT', onInt)
+  console.log(`[production] launcher exit=${exitCode}`)
   return exitCode
 }
 

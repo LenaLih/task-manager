@@ -74,7 +74,11 @@ test('real production Next rewrite forwards Origin, cookies and private API resp
       const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'])
       await once(killer, 'exit')
     } else child.kill('SIGTERM')
-    const [code] = await exited
-    if (process.platform !== 'win32') assert.equal(code, 0)
+    const [code, signal] = await exited
+    console.log(`[production smoke] launcher terminated; platform=${process.platform}; code=${code}; signal=${signal ?? 'none'}`)
+    if (process.platform !== 'win32') {
+      assert.equal(code, 0, `Graceful launcher shutdown failed (signal=${signal ?? 'none'}); inspect production child exit diagnostics`)
+      assert.equal(signal, null)
+    }
   }
 })

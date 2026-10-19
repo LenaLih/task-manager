@@ -8,7 +8,7 @@ const env = {
   DATABASE_URL: 'postgresql://test:password@localhost/task_manager_test',
   JWT_ACCESS_SECRET: 'a'.repeat(48), JWT_REFRESH_SECRET: 'b'.repeat(48),
 }
-function harness({ migrationCode = 0, ready = true } = {}) {
+function harness({ migrationCode = 0, ready = true, nextShutdownCode = 0 } = {}) {
   const signals = new EventEmitter()
   const calls = []
   let webStarted
@@ -17,7 +17,7 @@ function harness({ migrationCode = 0, ready = true } = {}) {
     const child = new EventEmitter()
     child.kill = (signal) => {
       child.signal = signal
-      queueMicrotask(() => child.emit('exit', 0))
+      queueMicrotask(() => child.emit('exit', args.includes('start') ? nextShutdownCode : 0))
       return true
     }
     calls.push({ args, options, child })
@@ -57,6 +57,30 @@ test('migration failure blocks both servers', async () => {
   const h = harness({ migrationCode: 1 })
   assert.equal(await h.result, 1)
   assert.equal(h.calls.length, 1)
+})
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  test(`${signal} accepts Next 16 graceful exit 143 after forwarding SIGTERM`, async () => {
+    const h = harness({ nextShutdownCode: 143 })
+    await h.web
+    h.signals.emit(signal)
+    assert.equal(await h.result, 0)
+    assert.equal(h.calls[2].child.signal, 'SIGTERM')
+  })
+}
+
+test('unsolicited Next exit 143 is still a failure', async () => {
+  const h = harness()
+  await h.web
+  h.calls[2].child.emit('exit', 143)
+  assert.equal(await h.result, 1)
+})
+
+test('genuine Next shutdown failure remains nonzero', async () => {
+  const h = harness({ nextShutdownCode: 1 })
+  await h.web
+  h.signals.emit('SIGTERM')
+  assert.equal(await h.result, 1)
 })
 
 test('API readiness failure prevents Next startup and stops API', async () => {
