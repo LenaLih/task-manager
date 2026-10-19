@@ -1,39 +1,107 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react'
 import type { BaseQueryFn, FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query'
-import { Mutex } from 'async-mutex'
-import { clearSession, setSession } from './auth'
+import type { BaseQueryApi } from '@reduxjs/toolkit/query'
+import type { StoreExtra, RefreshResult } from './coordinator'
+import { clearSession, setSession, restoreStarted, restoreFailed, invalidatePendingSession } from './auth'
 import type { AuthState, Session } from './auth'
 import type { Task } from '../types/task'
-const mutex = new Mutex()
 const rawQuery = fetchBaseQuery({ baseUrl: '/api', credentials: 'include', prepareHeaders(headers, { getState }) {
   const token = (getState() as { auth: AuthState }).auth.session?.accessToken
   if (token) headers.set('authorization', `Bearer ${token}`)
   return headers
 } })
+const getAuth = (api: BaseQueryApi) => (api.getState() as { auth: AuthState }).auth
+
+function refreshSession(api: BaseQueryApi, options: object): Promise<RefreshResult> {
+  const coordinator = (api.extra as StoreExtra).authCoordinator
+  if (coordinator.signingOut) {
+    return Promise.resolve({ error: { status: 'CUSTOM_ERROR', error: 'Logout in progress' } })
+  }
+  if (coordinator.refresh) return coordinator.refresh
+
+  const revision = getAuth(api).revision
+  api.dispatch(restoreStarted())
+  coordinator.refresh = (async () => {
+    const release = await coordinator.mutex.acquire()
+    try {
+      if (getAuth(api).revision !== revision || coordinator.signingOut) {
+        return { error: { status: 'CUSTOM_ERROR' as const, error: 'Session changed' } }
+      }
+      // Do not tie the shared refresh to one component's abort signal.
+      const refreshApi = { ...api, signal: new AbortController().signal }
+      const result = await rawQuery({ url: '/auth/refresh', method: 'POST' }, refreshApi, options)
+      if (getAuth(api).revision !== revision) return result
+
+      if (result.data) {
+        api.dispatch(setSession(result.data as Session))
+      } else if (result.error?.status === 401) {
+        api.dispatch(clearSession())
+      } else {
+        api.dispatch(restoreFailed())
+      }
+      return result
+    } finally {
+      release()
+      coordinator.refresh = undefined
+    }
+  })()
+  return coordinator.refresh
+}
+
 const baseQuery: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryError> = async (args, api, options) => {
-  await mutex.waitForUnlock()
-  const sentToken = (api.getState() as { auth: AuthState }).auth.session?.accessToken
-  let result = await rawQuery(args, api, options)
+  const coordinator = (api.extra as StoreExtra).authCoordinator
   const url = typeof args === 'string' ? args : args.url
+  if (url === '/auth/refresh') return refreshSession(api, options)
+
+  if (url === '/auth/logout') {
+    // Invalidate pending responses immediately, before waiting for token rotation.
+    coordinator.signingOut = true
+    api.dispatch(invalidatePendingSession())
+    try {
+      await coordinator.mutex.waitForUnlock()
+      const result = await rawQuery(args, api, options)
+      if (!result.error || result.error.status === 401) {
+        api.dispatch(clearSession())
+      } else {
+        api.dispatch(restoreFailed())
+      }
+      return result
+    } finally {
+      coordinator.signingOut = false
+    }
+  }
+
+  if (url === '/auth/login' || url === '/auth/register') {
+    const revision = getAuth(api).revision
+    const release = await coordinator.mutex.acquire()
+    try {
+      if (coordinator.signingOut || getAuth(api).revision !== revision) {
+        return { error: { status: 'CUSTOM_ERROR', error: 'Session changed' } }
+      }
+      const result = await rawQuery(args, api, options)
+      if (result.data && getAuth(api).revision === revision) {
+        api.dispatch(setSession(result.data as Session))
+      }
+      return result
+    } finally {
+      release()
+    }
+  }
+
+  await coordinator.mutex.waitForUnlock()
+  const sentToken = getAuth(api).session?.accessToken
+  let result = await rawQuery(args, api, options)
+
   if (result.error?.status === 401 && !url.startsWith('/auth/')) {
-    const currentToken = (api.getState() as { auth: AuthState }).auth.session?.accessToken
+    const currentToken = getAuth(api).session?.accessToken
     if (!currentToken) return result
     if (sentToken !== currentToken) return rawQuery(args, api, options)
-    if (!mutex.isLocked()) {
-      const release = await mutex.acquire()
-      try {
-        const refresh = await rawQuery({ url: '/auth/refresh', method: 'POST' }, api, options)
-        if (refresh.data) {
-          if ((api.getState() as { auth: AuthState }).auth.session?.accessToken !== sentToken) return result
-          api.dispatch(setSession(refresh.data as Session)); result = await rawQuery(args, api, options)
-        }
-        else if ((api.getState() as { auth: AuthState }).auth.session?.accessToken === sentToken) {
-          api.dispatch(clearSession()); api.dispatch(taskApi.util.resetApiState())
-        }
-      } finally { release() }
-    } else {
-      await mutex.waitForUnlock()
-      if ((api.getState() as { auth: AuthState }).auth.session) result = await rawQuery(args, api, options)
+
+    const refresh = await refreshSession(api, options)
+    if (getAuth(api).session && getAuth(api).session?.accessToken !== sentToken) {
+      result = await rawQuery(args, api, options)
+    } else if (refresh.error) {
+      return { error: refresh.error }
     }
   }
   return result

@@ -18,3 +18,10 @@
 }
 
 .auth-form{display:grid;gap:18px;padding:0 32px 32px}.auth-form label{display:grid;gap:8px}.auth-form input{padding:12px;border:1px solid #d4ddcc;border-radius:8px;font:inherit}.auth-form p,.auth-form a{font-size:13px}.account{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:12px}.account button{border:1px solid #d4ddcc;border-radius:8px;padding:8px;background:#f8f9f5;color:#305a47}button:disabled{cursor:wait;opacity:.65}
+.auth-form .auth-error {
+  color: #a44e3b;
+}
+
+.auth-form label + .auth-error {
+  margin-top: 8px;
+}

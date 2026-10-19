@@ -181,3 +181,207 @@ backend command is `npm run start:api:sqlite`. Keep the original JWT secrets.
 This returns to the original SQLite data only: new PostgreSQL writes are not
 copied back. Keep a consistent SQLite backup (including WAL state if copying a
 live database) before any future import. The PostgreSQL migration 001 is unchanged.
+
+## Next.js infrastructure (stage 1)
+
+The default `npm run dev` starts Next.js on http://localhost:3000 and the existing
+Express API on 127.0.0.1:3001. The launcher overrides APP_ORIGIN for that API
+process to http://localhost:3000; it does not edit .env or JWT settings.
+PostgreSQL must already be running and DATABASE_URL must be configured.
+Optional launcher variables: NEXT_PORT (3000), API_PORT (3001), NEXT_APP_ORIGIN.
+
+Next routes `/`, `/login` and `/register` are server-rendered placeholders with
+the existing CSS and working Next links. Task operations, forms, Redux providers
+and authentication bootstrap have intentionally NOT been connected to these
+pages yet. The Next module tree does not import the legacy global store or make
+user-data requests. Only public placeholder content can be cached.
+
+Next forwards `/api/*` to Express, retaining the `/api` prefix. Configure
+API_INTERNAL_ORIGIN before building if Express uses a different address; its
+default is http://127.0.0.1:3001. No API/JWT secrets are exposed as NEXT_PUBLIC
+variables. The backend remains solely responsible for authentication.
+
+```powershell
+npm run dev                 # Next placeholders + Express, localhost:3000
+npm run dev:vite            # Original working UI + Express, localhost:5173
+npm run dev:next            # Next only; start API separately if needed
+npm run typecheck
+npm run lint
+npm test                   # API suite requires separate TEST_DATABASE_URL
+npm run build               # Next + Express
+npm run build:vite          # Legacy Vite + Express
+npm run start:next          # Built Next pages, port 3000
+```
+
+Do not run both combined dev commands simultaneously: they both start Express
+on port 3001 and require different APP_ORIGIN values. Stop one before switching.
+The unchanged dev:api command reads APP_ORIGIN from .env (legacy default 5173).
+For separately launched Next/API processes set APP_ORIGIN=http://localhost:3000
+for Express, without overwriting existing JWT secrets.
+
+The custom tsconfig.next.json isolates Next app types from the retained Vite
+project references and server NodeNext settings. next-env.d.ts and .next are
+Next-generated artifacts and ignored by Git. Vite, React Router and the existing
+components/tests remain installed and unchanged. This step does not add a
+production process supervisor or complete the migration of the application.
+
+## Next.js client authentication (stage 2)
+
+The root client Providers component creates a separate Redux store and auth
+coordinator for its tree. Next modules do not import the Vite-only singleton
+(src/store/legacy.ts). Authentication requests run after mount in AuthBootstrap,
+not in Server Components or during static generation. Only public shells are
+server-rendered/cached; user tokens are not serialized into server page props.
+
+`/login` and `/register` now render the existing authentication form using Next
+navigation. `/` is guarded and still shows a task-migration placeholder, with the
+current email and a logout button. The task list has not been connected to Next.
+
+A refresh promise and mutex are scoped to each store. StrictMode effect replay
+reuses an in-flight refresh rather than rotating twice. Confirmed refresh 401
+clears the session and private RTK cache; 500/network errors retain the session
+and show a retry button. Logout invalidates old response revisions immediately,
+waits for an in-flight cookie rotation and then revokes that cookie. Refresh
+cannot start during logout; stale refresh/login responses cannot write auth
+state. Failed logout keeps the local session and offers retry. Access JWT remains
+in memory, and the HttpOnly refresh cookie remains owned by Express.
+
+The Vite application remains available via `npm run dev:vite`, using its legacy
+React Router form/entrypoint; Next uses `npm run dev`. Do not run both combined
+launchers simultaneously. The mutex coordinates a single store, not different
+browser tabs. Browser cookie delivery/revocation still depends on the server
+response. Login/registration and refresh use the same mutex, so logout waits
+for their Set-Cookie responses before revoking the session. Broader cross-tab
+or session-family coordination is not part of this stage.
+
+Checks: `npm run typecheck`, `npm run lint`, `npm run build`,
+`npm run build:vite`, and `npm test -- --maxWorkers=1` with a separate
+TEST_DATABASE_URL ending in `_test`. New tests cover bootstrap StrictMode replay,
+401 redirect, 500/network retry, per-tree isolation, login/registration, concurrent
+refresh, logout ordering and stale session responses.
+
+## Next.js task interface (stage 3)
+
+The guarded `/` route now reuses TaskManager, TaskForm, TaskList, TaskItem and
+TaskFilters with the same CSS and responsive layout. Next no longer renders
+the migration placeholder or a second account toolbar on this route.
+
+Tasks are fetched in the browser only after auth initialization succeeds.
+No Server Component fetches private data. A fresh page mount restores the
+HttpOnly-cookie session and then refetches `/api/tasks` from Express/PostgreSQL.
+The API, database schema and migration files are unchanged.
+
+Existing RTK Query tags, mutation invalidation and optimistic status updates
+with rollback remain in place. Load failures show the existing retry button;
+create/edit/delete failures keep their existing messages and behavior.
+
+A store middleware resets private RTK state on clearSession or an identity
+change, before publishing the new identity. Same-user access-token refresh does
+not reset task data. Old in-flight responses cannot replace a new account's
+cache. AuthGuard keys its private subtree by user ID so local filters, drafts
+and mutation errors do not survive account changes. Logout cache cleanup is
+centralized rather than repeated inside TaskManager.
+
+Run `npm run dev` and open http://localhost:3000. Test login, task creation,
+editing by double click/Enter, completion, all three filters, deletion, page
+reload and logout. `npm run dev:vite` still runs the legacy UI for comparison;
+do not run both combined launchers simultaneously on API port 3001.
+
+Validation commands: `npm run typecheck`, `npm run lint`,
+`npm test -- --maxWorkers=1` (with dedicated TEST_DATABASE_URL),
+`npm run build`, `npm run build:vite`.
+The new UI integration tests mock fetch; PostgreSQL persistence and ownership
+are separately verified by the existing server integration suite. Hydration
+is checked in jsdom; real-browser end-to-end/visual checks remain separate.
+
+## Real-browser E2E (Playwright)
+
+Requirements: local PostgreSQL running in Docker, separate database
+`task_manager_e2e`, Node dependencies, and Playwright Chromium.
+The existing `.env` and its JWT secrets are never rewritten by E2E.
+
+```powershell
+# Run once if the database does not exist:
+docker compose exec postgres createdb -U task_manager task_manager_e2e
+npm run test:e2e:install
+npm run test:e2e
+```
+
+`npm run test` / `npm test` still runs Vitest (use a separate task_manager_test
+for its PostgreSQL suite). `npm run test:e2e` verifies the E2E database, applies
+existing migrations there and starts Playwright. Both the launcher and API
+bootstrap reject non-local connections, a database name other than
+`task_manager_e2e`, or a DATABASE_URL naming that same database. The actual
+`current_database()` is checked before any migration. No tables are truncated,
+no existing user data is deleted, and every test gets random unique accounts.
+Test users/tasks remain only in the E2E database for debugging.
+
+By default E2E derives task_manager_e2e from local DATABASE_URL credentials.
+Alternatively set E2E_DATABASE_URL explicitly to a localhost URL naming exactly
+that database. Do not point the main application DATABASE_URL at the E2E database.
+
+Playwright starts its own Express API at 127.0.0.1:3201 and Next.js at
+http://localhost:3200. Existing servers are never reused. Next uses .next-e2e
+so the normal dev build stays separate. The E2E API generates ephemeral JWT
+secrets in memory and retains the original JWT/cookie implementation. It uses
+only task_manager_e2e; main app startup files and routes are unchanged.
+
+Four scenarios run in two Chromium projects (desktop 1280x900, mobile 390x844):
+registration/login/logout/F5, task CRUD/filtering/persistence, field validation
+and generic bad credentials, and isolation of two accounts plus an actual
+foreign-task 404. Each scenario monitors page errors and critical console errors,
+including hydration, and checks relevant responsive layout. Expected API 401
+resource messages and external Google Fonts load failures are excluded from
+console diagnostics; JavaScript exceptions and hydration errors are not excluded.
+These are Chromium tests with viewport/touch emulation, not a real mobile device
+or Safari/Firefox coverage. Auth and CRUD requests hit the real Express/Postgres
+stack; no application API is mocked.
+
+Reports: playwright-report/index.html; failed-test screenshots, video and traces
+in test-results/. Browser binaries are in .playwright-browsers/. These, .next-e2e
+and blob-report are ignored by Git. Reports/traces can contain test-only cookies
+and credentials: do not publish them unreviewed.
+
+For one project: `npm run test:e2e -- --project=desktop-chromium`.
+Use `npm run test:e2e -- --headed` to inspect the real browser interactively.
+
+## GitHub Actions CI
+
+Workflow `.github/workflows/ci.yml` runs on pull requests to `main` and pushes to
+`main`. It uses Node.js 24 LTS, `npm ci`, and a disposable PostgreSQL 17 service.
+It creates and migrates `task_manager_test` and `task_manager_e2e` separately.
+The `postgres` database is used only to bootstrap the service; tests never reset it.
+No local `.env`, production credentials, or Neon connection is used in CI.
+JWT secrets in the workflow environment are public test-only values and must never
+be reused outside tests. CI fails if integration test configuration is missing.
+
+The checks run TypeScript, ESLint, unit/integration tests, production Next.js and
+Express builds, then Chromium E2E tests for desktop and mobile. E2E currently
+starts the Next.js development server, as configured locally; the production
+build is checked separately. Chromium system dependencies are installed on Ubuntu.
+Failed E2E runs upload HTML reports, screenshots, videos and traces for seven days.
+Every check is blocking; newer runs cancel obsolete runs for the same PR/branch.
+Local npm commands are unchanged. Workflow execution, Linux dependencies and
+artifact upload must be verified in GitHub Actions after publishing the branch
+and opening a PR to `main`. No deployment is performed by this workflow.
+
+### Dependency audit
+
+The current audit reports five high entries from one development dependency chain:
+`eslint-config-next@16.4.2 -> @next/eslint-plugin-next@16.4.2 -> fast-glob@3.3.1 -> micromatch@4.0.8 -> braces@3.0.3`.
+The underlying advisory is
+[GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+(stack exhaustion with deeply nested patterns). `npm audit --omit=dev` reports no
+production dependency vulnerabilities. This does not make linting untrusted
+patterns risk-free.
+
+At the time of this check, npm lists `braces@3.0.3` as the latest version, with no
+patched release available. The automatic suggestion to use
+`eslint-config-next@14.2.35` crosses major versions and is not applied.
+Safe follow-up: upgrade within Next.js 16 when its lint dependency chain is fixed,
+or use a narrowly scoped override once a compatible patched `braces` release
+exists, then rerun lint, typecheck, tests and builds. Until then, monitor the
+advisory and keep lint execution isolated with read-only repository permissions
+and without production secrets. Audit is reported separately rather than silently
+ignored by a failing CI audit step. No `npm audit fix --force` or dependency
+version changes were made for this CI setup.

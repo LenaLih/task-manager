@@ -6,7 +6,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { ProtectedRoute } from './ProtectedRoute'
 import { createStore } from '../store'
-import { AuthPage } from './AuthPage'
+import { AuthPage } from './LegacyAuthPage'
 import { clearSession, setSession } from '../store/auth'
 afterEach(cleanup)
 it('shows login after an invalid session on a protected route', () => {

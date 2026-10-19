@@ -7,7 +7,19 @@ import request from 'supertest'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import { createApp } from './app'
-const config = { accessSecret: 'test-access-secret-'.repeat(3), refreshSecret: 'test-refresh-secret-'.repeat(3), origin: 'http://localhost:5173', production: false }
+if (process.env.CI && (
+  !process.env.TEST_DATABASE_URL
+  || !process.env.JWT_ACCESS_SECRET
+  || !process.env.JWT_REFRESH_SECRET
+)) {
+  throw new Error('CI requires TEST_DATABASE_URL and dedicated test JWT secrets')
+}
+const config = {
+  accessSecret: process.env.CI ? process.env.JWT_ACCESS_SECRET! : 'test-access-secret-'.repeat(3),
+  refreshSecret: process.env.CI ? process.env.JWT_REFRESH_SECRET! : 'test-refresh-secret-'.repeat(3),
+  origin: 'http://localhost:5173',
+  production: false,
+}
 let instance: ReturnType<typeof createApp>
 
 const password = 'test-password-123'
