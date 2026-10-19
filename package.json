@@ -13,7 +13,11 @@
     "start:api": "node dist-server/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b && tsc -p server/tsconfig.json --noEmit"
+    "typecheck": "tsc -b && tsc -p server/tsconfig.json --noEmit",
+    "db:migrate": "tsx server/migrate-cli.ts",
+    "db:migrate:production": "node dist-server/migrate-cli.js",
+    "dev:api:sqlite": "tsx watch server/sqlite-index.ts",
+    "start:api:sqlite": "node dist-server/sqlite-index.js"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.13.0",
@@ -26,6 +30,7 @@
     "express-rate-limit": "^8.7.1",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-redux": "^9.3.0",
@@ -41,6 +46,7 @@
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.13.3",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@types/supertest": "^7.2.1",
