@@ -385,3 +385,54 @@ advisory and keep lint execution isolated with read-only repository permissions
 and without production secrets. Audit is reported separately rather than silently
 ignored by a failing CI audit step. No `npm audit fix --force` or dependency
 version changes were made for this CI setup.
+
+## Production launcher (Render Free preparation)
+
+Build with `npm ci --include=dev` and `npm run build`, then run `npm start`
+(or `node scripts/start-production.mjs`). Configure environment variables externally;
+the launcher intentionally does not load the development `.env` file.
+Required: `PORT`, `APP_ORIGIN`, `DATABASE_URL`, `JWT_ACCESS_SECRET`,
+`JWT_REFRESH_SECRET`. JWT secrets must be distinct and at least 32 characters.
+Use the exact public HTTPS origin without a trailing slash. HTTP localhost is
+allowed for smoke tests. Set `API_INTERNAL_ORIGIN=http://127.0.0.1:3001` during
+both build and runtime; the production Next configuration rejects other targets.
+The public PORT must differ from 3001.
+
+Startup runs the compiled migration CLI, starts Express on loopback port 3001,
+waits for its health endpoint, and then starts Next on `0.0.0.0:$PORT`.
+Keep the `migrations/` directory with the build output. Migration failures block
+startup. SIGTERM/SIGINT cancel startup or stop both servers; the launcher waits
+for children and escalates after 15 seconds. Express closes its PostgreSQL pool
+and has its own 10-second shutdown deadline. Unexpected child exits are fatal.
+A pending migration is also supervised and terminated on shutdown.
+
+Render Health Check Path: `/api/health`. It passes through Next rewrites to
+Express and returns only `{ "status": "ok" }`, without a database query.
+The API checks PostgreSQL before listening. All `/api` responses use
+`Cache-Control: no-store`. Production cookies retain HttpOnly, Secure,
+SameSite=Strict and Path=/api/auth; state-changing requests require APP_ORIGIN.
+JWT/DB credentials are removed from the Next subprocess environment. Never
+commit `.env` or configure credentials through NEXT_PUBLIC_* or next.config env.
+Use Render environment settings and TLS for the external PostgreSQL connection.
+
+Express trusts only the immediate loopback Next proxy (hop zero), not arbitrary
+forwarded hops. Rate limiting uses the rightmost forwarded address. This is a
+conservative baseline: on Render it may identify an ingress proxy and group
+users together. Verify Render's actual forwarded-header chain and spoofed XFF
+behavior before public release; do not switch to unconditional trust proxy=true
+or blindly trust a fixed count of hops. Next currently preserves incoming XFF.
+No IP diagnostic endpoint or infrastructure secrets are publicly exposed.
+
+`npm test` includes launcher lifecycle tests. After building, run
+`npm run test:production` with TEST_DATABASE_URL explicitly set to local
+`task_manager_test`. The smoke test passes this URL to the production launcher
+as DATABASE_URL and rejects other hosts/database names. It checks unavailable
+PostgreSQL, real production rewrites, Origin rejection, cookie rotation,
+private response headers and bearer authorization. It creates a uniquely named
+user only in that test database and does not clean or touch the application DB.
+The CI workflow runs this check after the production build. On Linux it also
+checks the real SIGTERM exit code; Windows uses taskkill to clean the test
+process tree because its kill API does not deliver POSIX signals. Unit tests
+cover graceful signal handling on every platform. Browser enforcement of Secure
+cookies and actual Render ingress/IP behavior still require HTTPS/Render checks.
+Local Vite/Next development commands and database schema are unchanged.

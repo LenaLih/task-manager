@@ -16,7 +16,7 @@ async function main(): Promise<void> {
       console.log('PostgreSQL API listening')
     })
     let stopping = false
-    function shutdown(): void {
+    function shutdown(code = 0): void {
       if (stopping) return
       stopping = true
       const timeout = setTimeout(() => process.exit(1), 10_000)
@@ -24,16 +24,16 @@ async function main(): Promise<void> {
       server.close(() => {
         void pool.end().then(() => {
           clearTimeout(timeout)
-          process.exit(0)
+          process.exit(code)
         }, () => process.exit(1))
       })
     }
     server.on('error', () => {
       console.error('API listener failed')
-      shutdown()
+      shutdown(1)
     })
-    process.on('SIGTERM', shutdown)
-    process.on('SIGINT', shutdown)
+    process.on('SIGTERM', () => shutdown())
+    process.on('SIGINT', () => shutdown())
   } catch (error) {
     await pool.end()
     throw error

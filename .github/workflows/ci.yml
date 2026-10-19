@@ -71,6 +71,8 @@ jobs:
         run: npm run test
       - name: Build Next.js and Express for production
         run: npm run build
+      - name: Production launcher and proxy smoke tests
+        run: npm run test:production
       - name: Install Chromium and system dependencies
         run: npx playwright install --with-deps chromium
       - name: Desktop and mobile E2E
