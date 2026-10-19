@@ -7,6 +7,11 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
+  {
+    files: ['scripts/start-production*.mjs', 'scripts/production-smoke.test.mjs'],
+    extends: [js.configs.recommended],
+    languageOptions: { globals: globals.node },
+  },
   ...nextVitals.map((config) => ({ ...config, files: ['src/app/**/*.{ts,tsx}'] })),
   globalIgnores(['dist', 'dist-server', 'coverage', '.next', '.next-e2e', '.playwright-browsers', 'playwright-report', 'test-results', 'blob-report', 'out', 'next-env.d.ts']),
   {

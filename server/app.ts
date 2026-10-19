@@ -42,8 +42,13 @@ export function createApp(config: Config, pool: Pool) {
 
   const app = express()
   app.disable('x-powered-by')
+  // Trust only the immediate local Next.js proxy, never arbitrary forwarded hops.
+  app.set('trust proxy', (address: string, hop: number) => (
+    hop === 0 && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)
+  ))
   app.use(helmet(), express.json({ limit: '16kb' }), cookieParser())
   app.use('/api', (req, res, next) => {
+    res.set('Cache-Control', 'no-store')
     if (
       !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
       req.get('origin') !== config.origin
@@ -52,6 +57,10 @@ export function createApp(config: Config, pool: Pool) {
       return
     }
     next()
+  })
+
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' })
   })
 
   const cookie = {

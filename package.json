@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "dev:api": "tsx watch server/index.ts",
     "start:api": "node dist-server/index.js",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/start-production.test.mjs",
     "test:watch": "vitest",
     "typecheck": "next typegen && tsc --noEmit -p tsconfig.next.json && tsc -b && tsc -p server/tsconfig.json --noEmit && tsc --noEmit -p tsconfig.e2e.json",
     "db:migrate": "tsx server/migrate-cli.ts",
@@ -24,7 +24,9 @@
     "build:next": "next build",
     "start:next": "next start --hostname 127.0.0.1 --port 3000",
     "test:e2e": "tsx e2e/run.ts",
-    "test:e2e:install": "tsx e2e/run.ts --install"
+    "test:e2e:install": "tsx e2e/run.ts --install",
+    "start": "node scripts/start-production.mjs",
+    "test:production": "node --test scripts/production-smoke.test.mjs"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.13.0",
