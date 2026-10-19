@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      # Disposable service only. postgres is the bootstrap database, never reset.
+      DATABASE_URL: postgresql://task_manager_ci:ci-only-password@127.0.0.1:5432/postgres
+      TEST_DATABASE_URL: postgresql://task_manager_ci:ci-only-password@127.0.0.1:5432/task_manager_test
+      E2E_DATABASE_URL: postgresql://task_manager_ci:ci-only-password@127.0.0.1:5432/task_manager_e2e
+      JWT_ACCESS_SECRET: ci-only-access-secret-never-use-outside-tests-2026
+      JWT_REFRESH_SECRET: ci-only-refresh-secret-never-use-outside-tests-2026
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: task_manager_ci
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U task_manager_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Create isolated test databases
+        run: |
+          docker exec "${{ job.services.postgres.id }}" psql -U task_manager_ci -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE task_manager_test;'
+          docker exec "${{ job.services.postgres.id }}" psql -U task_manager_ci -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE task_manager_e2e;'
+      - name: Migrate integration database
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+      - name: Migrate E2E database
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: ${{ env.E2E_DATABASE_URL }}
+      - name: TypeScript
+        run: npm run typecheck
+      - name: ESLint
+        run: npm run lint
+      - name: Unit and PostgreSQL integration tests
+        run: npm run test
+      - name: Build Next.js and Express for production
+        run: npm run build
+      - name: Install Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+      - name: Desktop and mobile E2E
+        id: e2e
+        run: npm run test:e2e
+      - name: Upload failed E2E report and traces
+        if: ${{ failure() && steps.e2e.outcome == 'failure' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: warn

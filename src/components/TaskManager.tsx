@@ -1,15 +1,15 @@
-﻿import { useState } from 'react'
+'use client'
+
+import { useState } from 'react'
 import type { Task, TaskFilter } from '../types/task'
 import {
-  taskApi,
   useTasksQuery,
   useAddTaskMutation,
   useUpdateTaskMutation,
   useDeleteTaskMutation,
   useLogoutMutation,
 } from '../store/api'
-import { useAppDispatch, useAppSelector } from '../store'
-import { clearSession } from '../store/auth'
+import { useAppSelector } from '../store'
 import { TaskForm } from './TaskForm'
 import { TaskFilters } from './TaskFilters'
 import { TaskList } from './TaskList'
@@ -18,12 +18,15 @@ function TaskManager() {
   const [filter, setFilter] = useState<TaskFilter>('all')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState<Set<Task['id']>>(new Set())
-  const { data: tasks = [], isLoading, isError, refetch } = useTasksQuery()
+  const { initialized, session } = useAppSelector((state) => state.auth)
+  const { data: tasks = [], isLoading, isFetching, isError, refetch } = useTasksQuery(
+    undefined,
+    { skip: !initialized || !session, refetchOnMountOrArgChange: true },
+  )
   const [addTask, addState] = useAddTaskMutation()
   const [updateTask] = useUpdateTaskMutation()
   const [deleteTask] = useDeleteTaskMutation()
   const [logout, logoutState] = useLogoutMutation()
-  const dispatch = useAppDispatch()
   const user = useAppSelector((state) => state.auth.session?.user)
 
   async function handleAddTask(title: Task['title']): Promise<boolean> {
@@ -81,8 +84,6 @@ function TaskManager() {
   async function handleLogout(): Promise<void> {
     try {
       await logout().unwrap()
-      dispatch(clearSession())
-      dispatch(taskApi.util.resetApiState())
     } catch {
       setError('Не удалось завершить сессию на сервере. Повторите выход.')
     }
@@ -147,7 +148,7 @@ function TaskManager() {
         ) : isError ? (
           <div className="empty-state" role="alert">
             <p>Не удалось загрузить задачи.</p>
-            <button onClick={() => void refetch()}>Повторить</button>
+            <button disabled={isFetching} onClick={() => void refetch()}>Повторить</button>
           </div>
         ) : (
           <TaskList
