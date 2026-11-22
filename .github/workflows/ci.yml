@@ -75,11 +75,15 @@ jobs:
         run: npm run test:production
       - name: Install Chromium and system dependencies
         run: npx playwright install --with-deps chromium
-      - name: Desktop and mobile E2E
-        id: e2e
-        run: npm run test:e2e
+      # Each invocation starts its own API, with a fresh in-memory auth rate limiter.
+      - name: Desktop E2E
+        id: desktop_e2e
+        run: npm run test:e2e -- --project desktop-chromium --output test-results/desktop
+      - name: Mobile E2E
+        id: mobile_e2e
+        run: npm run test:e2e -- --project mobile-chromium --output test-results/mobile
       - name: Upload failed E2E report and traces
-        if: ${{ failure() && steps.e2e.outcome == 'failure' }}
+        if: ${{ failure() && (steps.desktop_e2e.outcome == 'failure' || steps.mobile_e2e.outcome == 'failure') }}
         uses: actions/upload-artifact@v6
         with:
           name: playwright-failure-${{ github.run_id }}-${{ github.run_attempt }}
