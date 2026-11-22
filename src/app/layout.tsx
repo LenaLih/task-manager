@@ -3,11 +3,13 @@ import type { Metadata } from 'next'
 import type { ReactNode } from 'react'
 import '../index.css'
 import '../App.css'
+import '../Work.css'
+import '../Finance.css'
 
 export const metadata: Metadata = {
-  title: 'Ясно — Task Manager',
+  title: { default: 'ЯСНО. — Мой день', template: 'ЯСНО. — %s' },
   description: 'Ваше пространство для планов',
-  icons: { icon: '/favicon.svg' },
+  icons: { icon: { url: '/favicon.svg', type: 'image/svg+xml', sizes: 'any' } },
 }
 
 type RootLayoutProps = {

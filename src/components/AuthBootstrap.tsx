@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { taskApi } from '../store/api'
+import { ErrorState } from './ErrorState'
 
 type AuthBootstrapProps = { children: ReactNode }
 
@@ -11,6 +12,7 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
   const dispatch = useAppDispatch()
   const store = useAppStore()
   const { initialized, restoring, error } = useAppSelector((state) => state.auth)
+  const [retrying, setRetrying] = useState(false)
 
   useEffect(() => {
     const auth = store.getState().auth
@@ -23,36 +25,28 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
   }, [dispatch, store])
 
   function handleRetry(): void {
+    setRetrying(true)
     void dispatch(taskApi.endpoints.refresh.initiate(undefined, {
       fixedCacheKey: 'session-refresh',
-    }))
+    })).finally(() => setRetrying(false))
   }
+
+  const recoveryState = (error || retrying) && (
+    <ErrorState message={error ?? 'Восстанавливаем сессию…'} retryLabel="Повторить запрос"
+      pending={restoring || retrying} onRetry={handleRetry} />
+  )
 
   if (!initialized) {
     return (
       <main className="workspace">
-        {error ? (
-          <div role="alert">
-            <p>{error}</p>
-            <button className="add-button" onClick={handleRetry} disabled={restoring}>
-              Повторить запрос
-            </button>
-          </div>
-        ) : <p role="status">Восстанавливаем сессию…</p>}
+        {recoveryState || <p role="status">Восстанавливаем сессию…</p>}
       </main>
     )
   }
 
   return (
     <>
-      {error && (
-        <div className="workspace" role="alert">
-          <p>{error}</p>
-          <button className="add-button" onClick={handleRetry} disabled={restoring}>
-            Повторить запрос
-          </button>
-        </div>
-      )}
+      {recoveryState && <div className="workspace">{recoveryState}</div>}
       {children}
     </>
   )

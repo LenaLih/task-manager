@@ -8,6 +8,9 @@ type TaskListProps = {
   onToggle: (id: Task['id']) => void
   onDelete: (id: Task['id']) => void
   onEdit: (id: Task['id'], title: Task['title']) => void
+  onDetails?: (task: Task) => void
+  selection?: Set<string>
+  onSelect?: (id: string) => void
 }
 
 type EmptyMessage = {
@@ -37,6 +40,9 @@ export function TaskList({
   onToggle,
   onDelete,
   onEdit,
+  onDetails,
+  selection,
+  onSelect,
 }: TaskListProps) {
   if (!tasks.length) {
     const message = EMPTY_MESSAGES[filter]
@@ -60,6 +66,9 @@ export function TaskList({
           onToggle={onToggle}
           onDelete={onDelete}
           onEdit={onEdit}
+          onDetails={onDetails}
+          selected={selection?.has(task.id)}
+          onSelect={onSelect}
         />
       ))}
     </ul>

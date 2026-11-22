@@ -7,6 +7,7 @@ import '@testing-library/jest-dom/vitest'
 import { Provider } from 'react-redux'
 import Providers from '../app/providers'
 import HomePage from '../app/page'
+import TasksPage from '../app/tasks/page'
 import { AuthGuard } from './AuthGuard'
 import TaskManager from './TaskManager'
 import { createStore } from '../store'
@@ -18,6 +19,7 @@ const router = vi.hoisted(() => ({ replace: vi.fn() }))
 vi.mock('next/navigation', () => ({ useRouter: () => router }))
 const NativeRequest = globalThis.Request
 const session = { accessToken: 'one', user: { id: '1', email: 'one@example.com' } }
+const preferenceKey = 'yasno-task-view:1'
 const secondSession = { accessToken: 'two', user: { id: '2', email: 'two@example.com' } }
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { 'Content-Type': 'application/json' },
@@ -34,16 +36,25 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  localStorage.removeItem(preferenceKey)
+  localStorage.removeItem('yasno-task-view:2')
   for (const store of stores) store.dispatch(taskApi.util.resetApiState())
   stores.length = 0
   vi.unstubAllGlobals()
 })
 
-function renderManager() {
+function stubFetch(fetch: (request: Request) => Promise<Response>) {
+  vi.stubGlobal('fetch', (request: Request) => {
+    if (request.url.endsWith('/finance')) return Promise.resolve(json({ accounts: [], entries: [], budgets: [], goals: [] }))
+    if (request.url.endsWith('/projects')) return Promise.resolve(json([]))
+    return fetch(request)
+  })
+}
+function renderManager(tasksOnly = true) {
   const store = createStore()
   stores.push(store)
   store.dispatch(setSession(session))
-  const view = render(<Provider store={store}><AuthGuard><TaskManager /></AuthGuard></Provider>)
+  const view = render(<Provider store={store}><AuthGuard><TaskManager tasksOnly={tasksOnly} /></AuthGuard></Provider>)
   return { store, ...view }
 }
 
@@ -53,7 +64,7 @@ it('reuses the UI for create, edit, complete, filter and delete with tag refetch
     { id: '2', title: 'Done task', completed: true },
   ]
   let reads = 0
-  vi.stubGlobal('fetch', vi.fn(async (request: Request) => {
+  stubFetch(vi.fn(async (request: Request) => {
     expect(request.headers.get('authorization')).toBe('Bearer one')
     const id = request.url.split('/').at(-1)
     if (request.method === 'GET') { reads += 1; return json(tasks) }
@@ -102,10 +113,12 @@ it('reuses the UI for create, edit, complete, filter and delete with tag refetch
 
 it('shows load failure, retries and displays the empty state', async () => {
   let complete: ((response: Response) => void) | undefined
-  const fetch = vi.fn()
-    .mockImplementationOnce(() => new Promise<Response>((resolve) => { complete = resolve }))
-    .mockResolvedValueOnce(json([]))
-  vi.stubGlobal('fetch', fetch)
+  const fetch = vi.fn<(request: Request) => Promise<Response>>()
+    .mockImplementation((request: Request) => {
+      if (!request.url.endsWith('/tasks') || complete) return Promise.resolve(json([]))
+      return new Promise<Response>((resolve) => { complete = resolve })
+    })
+  stubFetch(fetch)
   renderManager()
   expect(screen.getByRole('status')).toHaveTextContent('Загружаем задачи')
   await waitFor(() => expect(complete).toBeDefined())
@@ -113,12 +126,12 @@ it('shows load failure, retries and displays the empty state', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось загрузить задачи')
   fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
   expect(await screen.findByText('Начните с маленького шага')).toBeInTheDocument()
-  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(fetch.mock.calls.filter(([request]) => request.url.endsWith('/tasks'))).toHaveLength(2)
 })
 
 it('rolls back an optimistic completion when PATCH fails', async () => {
   let complete: ((response: Response) => void) | undefined
-  vi.stubGlobal('fetch', vi.fn((request: Request) => (
+  stubFetch(vi.fn((request: Request) => (
     request.method === 'GET'
       ? Promise.resolve(json([{ id: '1', title: 'Plan', completed: false }]))
       : new Promise<Response>((resolve) => { complete = resolve })
@@ -138,24 +151,26 @@ it('waits for bootstrap and fetches tasks again after a fresh page mount', async
   let restored = false
   let reads = 0
   let refreshes = 0
-  vi.stubGlobal('fetch', vi.fn((request: Request) => {
+  stubFetch(vi.fn((request: Request) => {
     if (request.url.endsWith('/auth/refresh')) {
       refreshes += 1
       if (!restored) return new Promise<Response>((resolve) => { complete = resolve })
       return Promise.resolve(json(session))
     }
     expect(restored).toBe(true)
+    if (request.url.endsWith('/projects')) return Promise.resolve(json([]))
+    if (request.url.endsWith('/account')) return Promise.resolve(json({ name: '', theme: null, reminderDays: 0 }))
     reads += 1
     return Promise.resolve(json([{ id: '1', title: 'Persisted task', completed: false }]))
   }))
-  const first = render(<Providers><HomePage /></Providers>)
+  const first = render(<Providers><TasksPage /></Providers>)
   await waitFor(() => expect(complete).toBeDefined())
   expect(reads).toBe(0)
   restored = true
   complete!(json(session))
   await screen.findByText('Persisted task')
   first.unmount()
-  render(<Providers><HomePage /></Providers>)
+  render(<Providers><TasksPage /></Providers>)
   await screen.findByText('Persisted task')
   expect(reads).toBe(2)
   expect(refreshes).toBe(2)
@@ -163,7 +178,7 @@ it('waits for bootstrap and fetches tasks again after a fresh page mount', async
 
 it('does not query or render the task UI for an anonymous visitor', async () => {
   const fetch = vi.fn(async () => json({}, 401))
-  vi.stubGlobal('fetch', fetch)
+  stubFetch(fetch)
   render(<Providers><HomePage /></Providers>)
   await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/login'))
   expect(screen.queryByLabelText('Название новой задачи')).not.toBeInTheDocument()
@@ -171,7 +186,7 @@ it('does not query or render the task UI for an anonymous visitor', async () => 
 })
 
 it('clears private cache on logout and never displays it for the next account', async () => {
-  vi.stubGlobal('fetch', vi.fn(async (request: Request) => {
+  stubFetch(vi.fn(async (request: Request) => {
     if (request.url.endsWith('/auth/logout')) return new Response(null, { status: 204 })
     const own = request.headers.get('authorization') === 'Bearer one'
     return json([{ id: own ? '1' : '2', title: own ? 'Private one' : 'Private two', completed: false }])
@@ -190,7 +205,7 @@ it('clears private cache on logout and never displays it for the next account', 
 
 it('resets data and local filters on direct account changes', async () => {
   let complete: ((response: Response) => void) | undefined
-  vi.stubGlobal('fetch', vi.fn((request: Request) => (
+  stubFetch(vi.fn((request: Request) => (
     request.headers.get('authorization') === 'Bearer one'
       ? Promise.resolve(json([{ id: '1', title: 'Private one', completed: true }]))
       : new Promise<Response>((resolve) => { complete = resolve })
@@ -208,34 +223,68 @@ it('resets data and local filters on direct account changes', async () => {
 
 it('server-renders only the deterministic bootstrap shell without fetching', () => {
   const fetch = vi.fn()
-  vi.stubGlobal('fetch', fetch)
+  stubFetch(fetch)
   const html = renderToString(<Providers><HomePage /></Providers>)
   expect(html).toContain('Восстанавливаем сессию')
   expect(html).not.toContain('Название новой задачи')
   expect(fetch).not.toHaveBeenCalled()
 })
 
-it('hydrates the bootstrap shell before loading private tasks without mismatches', async () => {
+it('saves both views and restores the setting when the workspace remounts', async () => {
+  localStorage.setItem('yasno-task-view:2', 'board')
+  stubFetch(vi.fn(async (request: Request) => json(
+    request.url.endsWith('/tasks') ? [{ id: '1', title: 'Saved view task', completed: false }] : [],
+  )))
+  const first = renderManager()
+  await screen.findByText('Saved view task')
+  expect(screen.getByRole('button', { name: 'Список' })).toHaveAttribute('aria-pressed', 'true')
+  fireEvent.click(screen.getByRole('button', { name: 'Kanban' }))
+  expect(localStorage.getItem(preferenceKey)).toBe('board')
+  first.unmount()
+  renderManager()
+  expect(screen.getByRole('button', { name: 'Kanban' })).toHaveAttribute('aria-pressed', 'true')
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Поиск задач' }), { target: { value: 'Saved' } })
+  expect(screen.getByRole('button', { name: 'Kanban' })).toHaveAttribute('aria-pressed', 'true')
+  fireEvent.click(screen.getByRole('button', { name: 'Список' }))
+  expect(localStorage.getItem(preferenceKey)).toBe('list')
+})
+
+it('hydrates the bootstrap shell and opens the saved Kanban without mismatches', async () => {
+  localStorage.setItem(preferenceKey, 'board')
   const fetch = vi.fn(async (request: Request) => (
     request.url.endsWith('/auth/refresh')
       ? json(session)
       : json([{ id: '1', title: 'Hydrated task', completed: false }])
   ))
-  vi.stubGlobal('fetch', fetch)
+  stubFetch(fetch)
   const container = document.createElement('div')
-  container.innerHTML = renderToString(<Providers><HomePage /></Providers>)
+  container.innerHTML = renderToString(<Providers><TasksPage /></Providers>)
   expect(fetch).not.toHaveBeenCalled()
   document.body.appendChild(container)
   const onRecoverableError = vi.fn()
   let root: ReturnType<typeof hydrateRoot> | undefined
   try {
     await act(async () => {
-      root = hydrateRoot(container, <Providers><HomePage /></Providers>, { onRecoverableError })
+      root = hydrateRoot(container, <Providers><TasksPage /></Providers>, { onRecoverableError })
     })
     await screen.findByText('Hydrated task')
+    expect(screen.getByRole('button', { name: 'Kanban' })).toHaveAttribute('aria-pressed', 'true')
     expect(onRecoverableError).not.toHaveBeenCalled()
   } finally {
     act(() => root?.unmount())
     container.remove()
   }
+})
+
+it('shows the compact overview with quick creation and puts settings last', async () => {
+  stubFetch(async () => json([]))
+  renderManager(false)
+  expect(screen.getByRole('heading', { name: 'Мой день' })).toBeInTheDocument()
+  expect(await screen.findByLabelText('Название новой задачи')).toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Менеджер задач' })).not.toBeInTheDocument()
+  const links = screen.getAllByRole('link').filter(link => link.closest('nav'))
+  expect(links.map(link => link.textContent)).toEqual([
+    'Обзор', 'Мои задачи', 'Проекты', 'Календарь', 'Аналитика', 'Финансы', 'Настройки',
+  ])
+  expect(links[0]).toHaveAttribute('aria-current', 'page')
 })

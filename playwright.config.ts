@@ -16,6 +16,7 @@ export default defineConfig({
   use: {
     baseURL: webOrigin,
     browserName: 'chromium',
+    channel: process.env.E2E_CHROME === '1' ? 'chrome' : undefined,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',

@@ -9,8 +9,14 @@ type AppliedMigration = {
 
 const migrationsDirectory = new URL('../migrations/', import.meta.url)
 
+type MigrationOptions = {
+  compatibleNewer?: Readonly<Record<string, string>>
+}
+
 /** All pending migrations and their journal entries commit atomically. */
-export async function runMigrations(pool: Pool): Promise<string[]> {
+export async function runMigrations(pool: Pool, {
+  compatibleNewer = {},
+}: MigrationOptions = {}): Promise<string[]> {
   const entries = await readdir(migrationsDirectory, { withFileTypes: true })
   const names = entries
     .filter((entry) => entry.isFile() && /^\d+_[a-z0-9_]+\.sql$/.test(entry.name))
@@ -29,17 +35,18 @@ export async function runMigrations(pool: Pool): Promise<string[]> {
   }))
 
   const client = await pool.connect()
+  const rollback = Object.keys(compatibleNewer).length > 0
   let transactionStarted = false
   let released = false
 
   try {
-    await client.query('BEGIN')
+    await client.query(rollback ? 'BEGIN READ ONLY' : 'BEGIN')
     transactionStarted = true
     await client.query("SET LOCAL lock_timeout = '15s'")
     await client.query("SET LOCAL statement_timeout = '120s'")
     // A fixed, application-specific transaction lock serializes migration runners.
     await client.query('SELECT pg_advisory_xact_lock($1, $2)', [1937006961, 1])
-    await client.query(`
+    if (!rollback) await client.query(`
       CREATE TABLE IF NOT EXISTS public.schema_migrations (
         name TEXT PRIMARY KEY,
         checksum TEXT NOT NULL,
@@ -51,14 +58,22 @@ export async function runMigrations(pool: Pool): Promise<string[]> {
       'SELECT name, checksum FROM public.schema_migrations ORDER BY name',
     )
     const byName = new Map(migrations.map((migration) => [migration.name, migration]))
+    const latestKnown = names.at(-1)!
 
     for (const migration of applied) {
-      if (byName.get(migration.name)?.checksum !== migration.checksum) {
+      const known = byName.get(migration.name)
+      const checksum = known?.checksum ??
+        (migration.name > latestKnown && Object.hasOwn(compatibleNewer, migration.name)
+          ? compatibleNewer[migration.name] : undefined)
+      if (checksum !== migration.checksum) {
         throw new Error(`Applied migration is missing or modified: ${migration.name}`)
       }
     }
 
     const appliedNames = new Set(applied.map((migration) => migration.name))
+    if (rollback && [...names, ...Object.keys(compatibleNewer)].some(name => !appliedNames.has(name))) {
+      throw new Error('Database is missing migrations required by the rollback build')
+    }
     const latestApplied = applied.at(-1)?.name
     const executed: string[] = []
 

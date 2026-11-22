@@ -11,6 +11,12 @@ if (process.env.NODE_ENV === 'production' && apiOrigin !== 'http://127.0.0.1:300
 const nextConfig: NextConfig = {
   distDir: process.env.NEXT_DIST_DIR ?? '.next',
   typescript: { tsconfigPath: 'tsconfig.next.json' },
+  async headers() {
+    return [{
+      source: '/reset-password',
+      headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
+    }]
+  },
   async rewrites() {
     return [{ source: '/api/:path*', destination: `${apiOrigin}/api/:path*` }]
   },

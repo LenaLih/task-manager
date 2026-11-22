@@ -1,14 +1,17 @@
 import 'dotenv/config'
 import { createApp } from './app.js'
 import { createPostgresPool } from './db.js'
+import { createResetMailer } from './reset-mail.js'
 
 async function main(): Promise<void> {
   const pool = createPostgresPool()
   try {
+    const origin = process.env.APP_ORIGIN ?? 'http://localhost:5173'
     const { app } = createApp({
       accessSecret: process.env.JWT_ACCESS_SECRET ?? '',
       refreshSecret: process.env.JWT_REFRESH_SECRET ?? '',
-      origin: process.env.APP_ORIGIN ?? 'http://localhost:5173',
+      origin,
+      sendResetMail: createResetMailer(process.env, origin),
       production: process.env.NODE_ENV === 'production',
     }, pool)
     await pool.query('SELECT 1')

@@ -28,6 +28,10 @@ dist-ssr
 !.env.example
 data/
 *.sqlite*
+*.db
+*.db-*
+*.dump
+*.pgdump
 dist-server/
 coverage/
 

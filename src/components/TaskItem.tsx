@@ -1,13 +1,16 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent } from 'react'
-import type { Task } from '../types/task'
+import type { Task, WorkspaceTask } from '../types/task'
 
 type TaskItemProps = {
   pending: boolean
-  task: Task
+  task: WorkspaceTask
   onToggle: (id: Task['id']) => void
   onDelete: (id: Task['id']) => void
   onEdit: (id: Task['id'], title: Task['title']) => void
+  onDetails?: (task: Task) => void
+  selected?: boolean
+  onSelect?: (id: string) => void
 }
 
 export function TaskItem({
@@ -16,6 +19,9 @@ export function TaskItem({
   onToggle,
   onDelete,
   onEdit,
+  onDetails,
+  selected,
+  onSelect,
 }: TaskItemProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [draftTitle, setDraftTitle] = useState(task.title)
@@ -83,6 +89,8 @@ export function TaskItem({
 
   return (
     <li className={`task-item ${task.completed ? 'completed' : ''}`}>
+      {selected !== undefined && <input type="checkbox" aria-label={`Выбрать задачу: ${task.title}`}
+        checked={selected} onChange={() => onSelect?.(task.id)} />}
       <div className="task-label">
         <input
           disabled={pending}
@@ -116,6 +124,15 @@ export function TaskItem({
           </span>
         )}
       </div>
+      {!!task.subtasks?.length && <small className="work-subtask-count">
+        {task.subtasks.filter(item => item.completed).length}/{task.subtasks.length}
+      </small>}
+      {onDetails && (
+        <button className="task-details-button" type="button" disabled={pending}
+          aria-label={`Свойства задачи: ${task.title}`} onClick={() => onDetails(task)}>
+          <span aria-hidden="true">•••</span>
+        </button>
+      )}
       <button
         type="button"
         disabled={pending}

@@ -1,4 +1,4 @@
-# Local development only. The API continues to use SQLite at this stage.
+# PostgreSQL for local development and dedicated test databases.
 services:
   postgres:
     image: postgres:17-alpine
