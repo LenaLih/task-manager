@@ -8,7 +8,7 @@ const env = {
   DATABASE_URL: 'postgresql://test:password@localhost/task_manager_test',
   JWT_ACCESS_SECRET: 'a'.repeat(48), JWT_REFRESH_SECRET: 'b'.repeat(48),
 }
-function harness({ migrationCode = 0, ready = true, nextShutdownCode = 0 } = {}) {
+function harness({ migrationCode = 0, ready = true, nextShutdownCode = 0, runEnv = env } = {}) {
   const signals = new EventEmitter()
   const calls = []
   let webStarted
@@ -25,7 +25,7 @@ function harness({ migrationCode = 0, ready = true, nextShutdownCode = 0 } = {})
     if (args.includes('start')) webStarted()
     return child
   }
-  const result = startProduction({ env, launch, signals, readinessMs: 10,
+  const result = startProduction({ env: runEnv, launch, signals, readinessMs: 10,
     probe: async () => ({ status: ready ? 200 : 503, json: async () => ({ status: 'ok' }) }),
   })
   return { calls, signals, result, web }
@@ -57,6 +57,17 @@ test('migration failure blocks both servers', async () => {
   const h = harness({ migrationCode: 1 })
   assert.equal(await h.result, 1)
   assert.equal(h.calls.length, 1)
+})
+
+test('passes Mailjet credentials to Express and masks them for Next dotenv', async () => {
+  const h = harness({ runEnv: { ...env, MAILJET_API_KEY: 'fake-key', MAILJET_SECRET_KEY: 'fake-secret' } })
+  await h.web
+  for (const [key, value] of [['MAILJET_API_KEY', 'fake-key'], ['MAILJET_SECRET_KEY', 'fake-secret']]) {
+    assert.equal(h.calls[1].options.env[key], value)
+    assert.equal(h.calls[2].options.env[key], '')
+  }
+  h.signals.emit('SIGTERM')
+  assert.equal(await h.result, 0)
 })
 
 for (const signal of ['SIGTERM', 'SIGINT']) {

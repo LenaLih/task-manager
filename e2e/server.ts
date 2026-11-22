@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { createApp } from '../server/app.js'
+import { createResetMailer } from '../server/reset-mail.js'
 import { prepareDatabase } from './database.js'
-import { webOrigin } from './settings.js'
+import { smtpPort, webOrigin } from './settings.js'
 
 if (process.env.CI && (!process.env.JWT_ACCESS_SECRET || !process.env.JWT_REFRESH_SECRET)) {
   throw new Error('CI requires dedicated test JWT secrets')
@@ -17,6 +18,9 @@ const { app } = createApp({
     : randomBytes(48).toString('hex'),
   origin: webOrigin,
   production: false,
+  sendResetMail: createResetMailer({
+    RESET_MAIL_MODE: 'local', SMTP_PORT: String(smtpPort), NODE_ENV: 'test',
+  }, webOrigin),
 }, pool)
 const server = app.listen(3201, '127.0.0.1')
 function shutdown(): void {

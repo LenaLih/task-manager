@@ -64,7 +64,7 @@ export function AuthPage({ register = false }: AuthPageProps) {
   const [login, loginState] = useLoginMutation()
   const [signup, signupState] = useRegisterMutation()
   const router = useRouter()
-  const session = useAppSelector((state) => state.auth.session)
+  const { session, notice } = useAppSelector((state) => state.auth)
   const pending = submitting || loginState.isLoading || signupState.isLoading
 
   function handleEmailChange(event: ChangeEvent<HTMLInputElement>): void {
@@ -131,69 +131,67 @@ export function AuthPage({ register = false }: AuthPageProps) {
   if (session) return null
 
   return (
-    <main className="workspace">
-      <section className="intro">
-        <h1>ясно<span className="brand-dot">.</span></h1>
-        <p>Меньше шума. Больше фокуса.</p>
-      </section>
-      <section className="task-panel">
-        <div className="panel-heading">
-          <h2>{register ? 'Регистрация' : 'Вход'}</h2>
-        </div>
-        <form
-          className="auth-form"
-          onSubmit={handleSubmit}
-          noValidate
-          aria-busy={pending}
-          aria-describedby={errors.form ? formErrorId : undefined}
-        >
-          <div>
-            <label>
-              Email
-              <input
-                type="email"
-                aria-invalid={Boolean(errors.email) || undefined}
-                aria-describedby={errors.email ? emailErrorId : undefined}
-                autoComplete="email"
-                required
-                maxLength={254}
-                value={email}
-                onChange={handleEmailChange}
-              />
-            </label>
-            {errors.email && (
-              <p id={emailErrorId} className="auth-error" role="alert">{errors.email}</p>
-            )}
-          </div>
-          <div>
-            <label>
-              Пароль
-              <input
-                type="password"
-                aria-invalid={Boolean(errors.password) || undefined}
-                aria-describedby={errors.password ? passwordErrorId : undefined}
-                autoComplete={register ? 'new-password' : 'current-password'}
-                required
-                minLength={register ? 10 : undefined}
-                maxLength={128}
-                value={password}
-                onChange={handlePasswordChange}
-              />
-            </label>
-            {errors.password && (
-              <p id={passwordErrorId} className="auth-error" role="alert">{errors.password}</p>
-            )}
-          </div>
-          <p>Минимум 10 символов, максимум 72 байта UTF-8</p>
-          <button className="add-button" disabled={pending} type="submit">
-            {pending ? 'Подождите…' : register ? 'Создать аккаунт' : 'Войти'}
-          </button>
-          {errors.form && <p id={formErrorId} className="auth-error" role="alert">{errors.form}</p>}
-          <Link href={register ? '/login' : '/register'}>
-            {register ? 'Уже есть аккаунт? Войти' : 'Создать аккаунт'}
-          </Link>
-        </form>
-      </section>
-    </main>
+    <>
+    <div className="panel-heading">
+      <h2>{register ? 'Регистрация' : 'Вход'}</h2>
+    </div>
+    {!register && notice === 'password-changed' && <p role="status">Пароль изменён. Войдите с новым паролем.</p>}
+    <form
+      className="auth-form"
+      onSubmit={handleSubmit}
+      noValidate
+      aria-busy={pending}
+      aria-describedby={errors.form ? formErrorId : undefined}
+    >
+      <div>
+        <label>
+          Email
+          <input
+            type="email"
+            aria-invalid={Boolean(errors.email) || undefined}
+            aria-describedby={errors.email ? emailErrorId : undefined}
+            autoComplete="email"
+            required
+            maxLength={254}
+            value={email}
+            onChange={handleEmailChange}
+          />
+        </label>
+        {errors.email && (
+          <p id={emailErrorId} className="auth-error" role="alert">{errors.email}</p>
+        )}
+      </div>
+      <div>
+        <label>
+          Пароль
+          <input
+            type="password"
+            aria-invalid={Boolean(errors.password) || undefined}
+            aria-describedby={errors.password ? passwordErrorId : undefined}
+            autoComplete={register ? 'new-password' : 'current-password'}
+            required
+            minLength={register ? 10 : undefined}
+            maxLength={128}
+            value={password}
+            onChange={handlePasswordChange}
+          />
+        </label>
+        {errors.password && (
+          <p id={passwordErrorId} className="auth-error" role="alert">{errors.password}</p>
+        )}
+      </div>
+      <p>Минимум 10 символов, максимум 72 байта UTF-8</p>
+      <button className="add-button" disabled={pending} type="submit">
+        {pending ? 'Подождите…' : register ? 'Создать аккаунт' : 'Войти'}
+      </button>
+      {errors.form && <p id={formErrorId} className="auth-error" role="alert">{errors.form}</p>}
+      <div className="auth-links">
+        {!register && <Link href="/forgot-password">Забыли пароль?</Link>}
+        <Link href={register ? '/login' : '/register'}>
+          {register ? 'Уже есть аккаунт? Войти' : 'Создать аккаунт'}
+        </Link>
+      </div>
+    </form>
+    </>
   )
 }

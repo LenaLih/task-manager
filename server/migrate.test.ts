@@ -5,6 +5,17 @@ import { describe, expect, it, vi } from 'vitest'
 import { runMigrations } from './migrate'
 
 type AppliedMigration = { name: string; checksum: string }
+const migrationNames = ['001_initial.sql', '002_password_resets.sql', '003_task_details.sql',
+  '004_projects_and_task_history.sql', '005_completion_analytics.sql', '006_accounts.sql', '007_finance.sql']
+const newer = { '008_test.sql': 'a'.repeat(64) }
+
+async function existingJournal() {
+  return Promise.all(migrationNames.map(async name => {
+    const sql = (await readFile(new URL('../migrations/' + name, import.meta.url), 'utf8'))
+      .replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+    return { name, checksum: createHash('sha256').update(sql).digest('hex') }
+  }))
+}
 
 function createTestPool(applied: AppliedMigration[] = [], failMigration = false) {
   const query = vi.fn(async (sql: string, _values?: unknown[]) => {
@@ -20,10 +31,31 @@ function createTestPool(applied: AppliedMigration[] = [], failMigration = false)
 }
 
 describe('PostgreSQL migration runner', () => {
+  it('accepts an explicitly verified newer journal without running DDL', async () => {
+    const { pool, query } = createTestPool([...await existingJournal(), { name: '008_test.sql', checksum: newer['008_test.sql'] }])
+    await expect(runMigrations(pool, { compatibleNewer: newer })).resolves.toEqual([])
+    expect(query.mock.calls[0][0]).toBe('BEGIN READ ONLY')
+    expect(query.mock.calls.some(([sql]) => /CREATE TABLE|INSERT INTO/.test(sql))).toBe(false)
+  })
+
+  it('rejects unreviewed, modified or missing entries in rollback mode', async () => {
+    const known = await existingJournal()
+    for (const entry of [
+      { name: '009_unreviewed.sql', checksum: newer['008_test.sql'] },
+      { name: '008_test.sql', checksum: 'changed' },
+    ]) {
+      await expect(runMigrations(createTestPool([...known, entry]).pool, { compatibleNewer: newer }))
+        .rejects.toThrow('missing or modified')
+    }
+    await expect(runMigrations(createTestPool(known).pool, { compatibleNewer: newer }))
+      .rejects.toThrow('missing migrations')
+    await expect(runMigrations(createTestPool([...known, { name: '008_test.sql', checksum: newer['008_test.sql'] }]).pool))
+      .rejects.toThrow('missing or modified')
+  })
   it('runs DDL and records the migration on one locked transaction', async () => {
     const { pool, query, release, connect } = createTestPool()
 
-    await expect(runMigrations(pool)).resolves.toEqual(['001_initial.sql'])
+    await expect(runMigrations(pool)).resolves.toEqual(migrationNames)
 
     expect(connect).toHaveBeenCalledTimes(1)
     expect(query.mock.calls[0][0]).toBe('BEGIN')
@@ -46,7 +78,7 @@ describe('PostgreSQL migration runner', () => {
     const checksum = createHash('sha256').update(sql).digest('hex')
     const { pool, query } = createTestPool([{ name: '001_initial.sql', checksum }])
 
-    await expect(runMigrations(pool)).resolves.toEqual([])
+    await expect(runMigrations(pool)).resolves.toEqual(migrationNames.slice(1))
     expect(query.mock.calls.some(([sql]) => sql.includes('CREATE TABLE public.users'))).toBe(false)
   })
 

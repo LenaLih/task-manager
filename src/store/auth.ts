@@ -12,6 +12,7 @@ export interface AuthState {
   restoring: boolean
   error: string | null
   revision: number
+  notice?: 'password-changed'
 }
 
 const initialState: AuthState = {
@@ -26,19 +27,24 @@ const slice = createSlice({
   name: 'auth',
   initialState,
   reducers: {
+    updateSessionEmail(state, action: PayloadAction<string>) {
+      if (state.session) state.session.user.email = action.payload
+    },
     setSession(state, action: PayloadAction<Session>) {
       state.session = action.payload
       state.initialized = true
       state.restoring = false
       state.error = null
       state.revision += 1
+      state.notice = undefined
     },
-    clearSession(state) {
+    clearSession(state, action: PayloadAction<AuthState['notice']>) {
       state.session = null
       state.initialized = true
       state.restoring = false
       state.error = null
       state.revision += 1
+      state.notice = action.payload
     },
     invalidatePendingSession(state) {
       state.revision += 1
@@ -54,5 +60,5 @@ const slice = createSlice({
   },
 })
 
-export const { setSession, clearSession, restoreStarted, restoreFailed, invalidatePendingSession } = slice.actions
+export const { setSession, clearSession, restoreStarted, restoreFailed, invalidatePendingSession, updateSessionEmail } = slice.actions
 export const authReducer = slice.reducer

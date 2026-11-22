@@ -2,6 +2,7 @@ import 'dotenv/config'
 
 export const webOrigin = 'http://localhost:3200'
 export const apiOrigin = 'http://127.0.0.1:3201'
+export const smtpPort = 3215
 
 function parseDatabaseUrl(value: string): URL {
   try {

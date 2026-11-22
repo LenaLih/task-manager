@@ -9,26 +9,74 @@ import bcrypt from 'bcryptjs'
 import { randomUUID, createHash } from 'node:crypto'
 import { z } from 'zod'
 import { withTransaction } from './db.js'
+import { addProjectRoutes } from './projects.js'
+import { addAnalyticsRoutes } from './analytics.js'
+import { addPasswordResetRoutes, emailInput, passwordInput } from './password-reset.js'
+import type { SendResetMail } from './password-reset.js'
+import { addAccountRoutes } from './account.js'
+import { addFinanceRoutes } from './finance.js'
+import { tasksCsv } from './task-export.js'
 
 export interface Config {
   accessSecret: string
   refreshSecret: string
   origin: string
   production: boolean
+  sendResetMail?: SendResetMail
 }
 interface User { id: string; email: string; password: string }
-interface Task { id: string; title: string; completed: boolean }
 type PublicUser = Pick<User, 'id' | 'email'>
 const credentials = z.object({
-  email: z.string().email().max(254).transform((value) => value.toLowerCase()),
-  password: z.string().min(10).max(128)
-    .refine((value) => Buffer.byteLength(value, 'utf8') <= 72),
+  email: emailInput,
+  password: passwordInput,
 })
+const taskStatus = z.enum(['backlog', 'todo', 'in-progress', 'done'])
+const projectIdInput = z.uuid().nullable()
+const subtask = z.object({ id: z.uuid(), title: z.string().trim().min(1).max(120), completed: z.boolean() }).strict()
 const input = z.object({
   title: z.string().trim().min(1).max(300),
   completed: z.boolean().optional(),
+  description: z.string().trim().max(3000).optional(),
+  status: taskStatus.optional(),
+  priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+  startsOn: z.iso.date().refine((date) => !date.startsWith('0000-')).nullable().optional(),
+  dueOn: z.iso.date().refine((date) => !date.startsWith('0000-')).nullable().optional(),
+  projectId: projectIdInput.optional(),
+  category: z.string().trim().max(60).optional(),
+  tags: z.array(z.string().trim().min(1).max(32)).max(12)
+    .transform(tags => [...new Set(tags.map(tag => tag.toLowerCase()))]).optional(),
+  subtasks: z.array(subtask).max(20)
+    .refine(items => new Set(items.map(item => item.id)).size === items.length).optional(),
+}).strict()
+const bulkInput = z.object({
+  ids: z.array(z.string().min(1).max(128)).min(1).max(100).transform(ids => [...new Set(ids)]),
+  action: z.discriminatedUnion('type', [
+    z.object({ type: z.literal('status'), status: taskStatus }).strict(),
+    z.object({ type: z.literal('project'), projectId: projectIdInput }).strict(),
+    z.object({ type: z.literal('delete') }).strict(),
+  ]),
 }).strict()
 const update = input.partial().refine((value) => Object.keys(value).length > 0)
+type TaskInput = z.infer<typeof update>
+type TaskRow = {
+  id: string
+  title: string
+  completed: boolean
+  description: string
+  status: NonNullable<TaskInput['status']>
+  priority: NonNullable<TaskInput['priority']>
+  startsOn: string | null
+  dueOn: string | null
+  projectId: string | null
+  category: string
+  tags: string[]
+  subtasks: z.infer<typeof subtask>[]
+}
+const taskColumns = `id, title, completed, description, status, priority,
+  to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(due_on, 'YYYY-MM-DD') AS "dueOn",
+  project_id AS "projectId", category, tags, subtasks`
+const consistentCompletion = ({ status, completed }: TaskInput) =>
+  status === undefined || completed === undefined || (status === 'done') === completed
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 class InvalidSessionError extends Error {}
 
@@ -46,7 +94,9 @@ export function createApp(config: Config, pool: Pool) {
   app.set('trust proxy', (address: string, hop: number) => (
     hop === 0 && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)
   ))
-  app.use(helmet(), express.json({ limit: '16kb' }), cookieParser())
+  app.use(helmet())
+  app.use('/api/tasks', express.json({ limit: '48kb' }))
+  app.use(express.json({ limit: '16kb' }), cookieParser())
   app.use('/api', (req, res, next) => {
     res.set('Cache-Control', 'no-store')
     if (
@@ -69,20 +119,20 @@ export function createApp(config: Config, pool: Pool) {
   }
 
   // Persist tokens inside the caller's transaction; send nothing before COMMIT.
-  async function issue(client: PoolClient, user: PublicUser) {
+  async function issue(client: PoolClient, user: PublicUser, device: string, id = randomUUID(), createdAt = new Date()) {
     const refresh = jwt.sign(
       { sub: user.id, jti: randomUUID(), type: 'refresh' }, config.refreshSecret,
       { expiresIn: '7d', issuer: 'task-manager', audience: 'refresh' },
     )
     const accessToken = jwt.sign(
-      { sub: user.id, type: 'access' }, config.accessSecret,
+      { sub: user.id, jti: randomUUID(), type: 'access', sid: id }, config.accessSecret,
       { expiresIn: '15m', issuer: 'task-manager', audience: 'access' },
     )
     const now = Date.now()
     await client.query('DELETE FROM public.sessions WHERE expires <= $1', [now])
     await client.query(
-      'INSERT INTO public.sessions (hash, user_id, expires) VALUES ($1, $2, $3)',
-      [hash(refresh), user.id, now + 7 * 86400000],
+      'INSERT INTO public.sessions (hash, user_id, expires, id, created_at, device) VALUES ($1, $2, $3, $4, $5, $6)',
+      [hash(refresh), user.id, now + 7 * 86400000, id, createdAt, device],
     )
     return { refresh, accessToken, user }
   }
@@ -95,6 +145,8 @@ export function createApp(config: Config, pool: Pool) {
   const limiter = rateLimit({
     windowMs: 15 * 60000, limit: 30, standardHeaders: true, legacyHeaders: false,
   })
+
+  addPasswordResetRoutes(app, pool, config.origin, config.sendResetMail)
 
   app.post('/api/auth/register', limiter, async (req, res) => {
     const parsed = credentials.safeParse(req.body)
@@ -111,7 +163,7 @@ export function createApp(config: Config, pool: Pool) {
           'INSERT INTO public.users (id, email, password) VALUES ($1, $2, $3)',
           [user.id, email, encrypted],
         )
-        return issue(client, user)
+        return issue(client, user, req.get('user-agent')?.slice(0, 240) ?? '')
       })
       sendSession(res.status(201), session)
     } catch (error) {
@@ -144,9 +196,17 @@ export function createApp(config: Config, pool: Pool) {
       res.status(401).json({ message: 'Неверный email или пароль' })
       return
     }
-    const session = await withTransaction(pool, (client) => (
-      issue(client, { id: user.id, email: user.email })
-    ))
+    const session = await withTransaction(pool, async (client) => {
+      const { rows: [current] } = await client.query<User>(
+        'SELECT id, email, password FROM public.users WHERE id = $1 FOR UPDATE', [user.id],
+      )
+      if (!current || current.password !== user.password || current.email !== user.email) return null
+      return issue(client, { id: current.id, email: current.email }, req.get('user-agent')?.slice(0, 240) ?? '')
+    })
+    if (!session) {
+      res.status(401).json({ message: 'Неверный email или пароль' })
+      return
+    }
     sendSession(res, session)
   })
 
@@ -170,17 +230,17 @@ export function createApp(config: Config, pool: Pool) {
 
     try {
       const session = await withTransaction(pool, async (client) => {
-        const consumed = await client.query(
-          `DELETE FROM public.sessions
-           WHERE hash = $1 AND user_id = $2 AND expires > $3 RETURNING user_id`,
-          [hash(token as string), userId, Date.now()],
-        )
-        if (!consumed.rowCount) throw new InvalidSessionError()
         const { rows: [user] } = await client.query<PublicUser>(
-          'SELECT id, email FROM public.users WHERE id = $1', [userId],
+          'SELECT id, email FROM public.users WHERE id = $1 FOR UPDATE', [userId],
         )
         if (!user) throw new InvalidSessionError()
-        return issue(client, user)
+        const { rows: [consumed] } = await client.query<{ id: ReturnType<typeof randomUUID>; device: string; created_at: Date }>(
+          `DELETE FROM public.sessions
+           WHERE hash = $1 AND user_id = $2 AND expires > $3 RETURNING id, device, created_at`,
+          [hash(token as string), userId, Date.now()],
+        )
+        if (!consumed) throw new InvalidSessionError()
+        return issue(client, user, consumed.device, consumed.id, consumed.created_at)
       })
       sendSession(res, session)
     } catch (error) {
@@ -200,7 +260,7 @@ export function createApp(config: Config, pool: Pool) {
     res.clearCookie('refreshToken', cookie).status(204).end()
   })
 
-  app.use('/api/tasks', (req, res, next) => {
+  app.use(['/api/tasks', '/api/projects', '/api/analytics', '/api/account', '/api/finance'], async (req, res, next) => {
     try {
       const token = req.get('authorization')?.match(/^Bearer (.+)$/)?.[1]
       if (!token) throw new Error('Missing token')
@@ -209,27 +269,48 @@ export function createApp(config: Config, pool: Pool) {
       })
       if (
         typeof payload === 'string' || typeof payload.sub !== 'string' ||
-        payload.type !== 'access'
+        payload.type !== 'access' || !z.uuid().safeParse(payload.sid).success
       ) throw new Error('Invalid token')
       res.locals.userId = payload.sub
+      res.locals.sessionId = payload.sid
     } catch {
       res.status(401).json({ message: 'Требуется авторизация' })
       return
     }
+    const active = await pool.query(
+      'SELECT 1 FROM public.sessions WHERE id = $1 AND user_id = $2 AND expires > $3',
+      [res.locals.sessionId, res.locals.userId, Date.now()],
+    )
+    if (!active.rowCount) { res.status(401).json({ message: 'Сессия завершена' }); return }
     next()
   })
+  addAccountRoutes(app, pool, res => { res.clearCookie('refreshToken', cookie) }, config.sendResetMail)
+  addProjectRoutes(app, pool)
+  addFinanceRoutes(app, pool)
+  addAnalyticsRoutes(app, pool)
 
   app.get('/api/tasks', async (_req, res) => {
-    const { rows } = await pool.query<Task>(
-      'SELECT id, title, completed FROM public.tasks WHERE user_id = $1 ORDER BY position',
+    const { rows } = await pool.query<TaskRow>(
+      `SELECT ${taskColumns} FROM public.tasks WHERE user_id = $1 ORDER BY position`,
       [res.locals.userId],
     )
     res.json(rows)
   })
 
+  app.get('/api/tasks/export/:format', async (req, res) => {
+    const { format } = req.params
+    if (format !== 'csv' && format !== 'json') { res.status(404).end(); return }
+    const { rows } = await pool.query<TaskRow>(
+      `SELECT ${taskColumns} FROM public.tasks WHERE user_id = $1 ORDER BY position`, [res.locals.userId],
+    )
+    res.attachment(`yasno-tasks.${format}`)
+    if (format === 'csv') res.type('text/csv; charset=utf-8').send(tasksCsv(rows))
+    else res.json(rows)
+  })
+
   app.get('/api/tasks/:id', async (req, res) => {
-    const { rows: [task] } = await pool.query<Task>(
-      'SELECT id, title, completed FROM public.tasks WHERE id = $1 AND user_id = $2',
+    const { rows: [task] } = await pool.query<TaskRow>(
+      `SELECT ${taskColumns} FROM public.tasks WHERE id = $1 AND user_id = $2`,
       [req.params.id, res.locals.userId],
     )
     if (!task) {
@@ -239,32 +320,106 @@ export function createApp(config: Config, pool: Pool) {
     res.json(task)
   })
 
+  app.get('/api/tasks/:id/history', async (req, res) => {
+    const owner = [res.locals.userId, req.params.id]
+    const { rows } = await pool.query(
+      `SELECT id::text, action, fields, occurred_at AS "occurredAt" FROM public.task_history
+       WHERE user_id = $1 AND task_id = $2 ORDER BY id DESC LIMIT 100`, owner,
+    )
+    if (!rows.length) {
+      const exists = await pool.query('SELECT 1 FROM public.tasks WHERE user_id = $1 AND id = $2', owner)
+      if (!exists.rowCount) { res.status(404).json({ message: 'Задача не найдена' }); return }
+    }
+    res.json(rows)
+  })
+
+  app.post('/api/tasks/bulk', async (req, res) => {
+    const parsed = bulkInput.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ message: 'Проверьте выбранные задачи и действие' }); return }
+    const { ids, action } = parsed.data
+    const owner = [res.locals.userId, ids]
+    const updated = await withTransaction(pool, async client => {
+      const locked = await client.query(
+        'SELECT id FROM public.tasks WHERE user_id = $1 AND id = ANY($2::text[]) ORDER BY id FOR UPDATE', owner,
+      )
+      if (locked.rowCount !== ids.length) return false
+      if (action.type === 'delete') {
+        await client.query('DELETE FROM public.tasks WHERE user_id = $1 AND id = ANY($2::text[])', owner)
+      } else if (action.type === 'status') {
+        await client.query(
+          "UPDATE public.tasks SET status = $3, completed = ($3 = 'done') WHERE user_id = $1 AND id = ANY($2::text[])",
+          [...owner, action.status],
+        )
+      } else {
+        await client.query(
+          'UPDATE public.tasks SET project_id = $3 WHERE user_id = $1 AND id = ANY($2::text[])',
+          [...owner, action.projectId],
+        )
+      }
+      return true
+    })
+    if (!updated) { res.status(404).json({ message: 'Одна или несколько задач недоступны' }); return }
+    res.status(204).end()
+  })
+
   app.post('/api/tasks', async (req, res) => {
     const parsed = input.safeParse(req.body)
-    if (!parsed.success) {
-      res.status(400).json({ message: 'Название должно содержать от 1 до 300 символов' })
+    if (!parsed.success || !consistentCompletion(parsed.data)) {
+      res.status(400).json({ message: 'Проверьте название и параметры задачи' })
       return
     }
-    const { rows: [task] } = await pool.query<Task>(
-      `INSERT INTO public.tasks (id, user_id, title, completed) VALUES ($1, $2, $3, $4)
-       RETURNING id, title, completed`,
-      [randomUUID(), res.locals.userId, parsed.data.title, parsed.data.completed ?? false],
+    const { title, completed, description = '', priority = 'medium', startsOn, dueOn,
+      projectId, category = '', tags = [], subtasks = [] } = parsed.data
+    if (startsOn && dueOn && startsOn > dueOn) {
+      res.status(400).json({ message: 'Срок должен быть не раньше даты начала' })
+      return
+    }
+    const status = parsed.data.status ?? (completed ? 'done' : 'todo')
+    const { rows: [task] } = await pool.query<TaskRow>(
+      `INSERT INTO public.tasks (id, user_id, title, completed, description, status, priority, starts_on,
+         due_on, project_id, category, tags, subtasks)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING ${taskColumns}`,
+      [randomUUID(), res.locals.userId, title, status === 'done', description, status, priority,
+        startsOn, dueOn, projectId, category, tags, JSON.stringify(subtasks)],
     )
     res.status(201).json(task)
   })
 
   app.patch('/api/tasks/:id', async (req, res) => {
     const parsed = update.safeParse(req.body)
-    if (!parsed.success) {
+    if (!parsed.success || !consistentCompletion(parsed.data)) {
       res.status(400).json({ message: 'Некорректная задача' })
       return
     }
-    const { rows: [task] } = await pool.query<Task>(
-      `UPDATE public.tasks
-       SET title = COALESCE($1::text, title), completed = COALESCE($2::boolean, completed)
-       WHERE id = $3 AND user_id = $4 RETURNING id, title, completed`,
-      [parsed.data.title ?? null, parsed.data.completed ?? null, req.params.id, res.locals.userId],
-    )
+    const { title, completed, description, status, priority, startsOn, dueOn,
+      projectId, category, tags, subtasks } = parsed.data
+    const nextStatus = `COALESCE($4::text, CASE WHEN $3::boolean THEN 'done'
+      WHEN $3 = false AND status = 'done' THEN 'todo' ELSE status END)`
+    let task: TaskRow | undefined
+    try {
+      const result = await pool.query<TaskRow>(
+        `UPDATE public.tasks SET title = COALESCE($1, title), description = COALESCE($2, description),
+         status = ${nextStatus}, completed = (${nextStatus} = 'done'),
+         priority = COALESCE($5, priority),
+         starts_on = CASE WHEN $6::boolean THEN $7::date ELSE starts_on END,
+         due_on = CASE WHEN $8::boolean THEN $9::date ELSE due_on END,
+         project_id = CASE WHEN $12::boolean THEN $13::text ELSE project_id END,
+         category = COALESCE($14, category), tags = COALESCE($15, tags),
+         subtasks = COALESCE($16, subtasks)
+         WHERE id = $10 AND user_id = $11 RETURNING ${taskColumns}`,
+        [title, description, completed, status, priority, startsOn !== undefined, startsOn,
+          dueOn !== undefined, dueOn, req.params.id, res.locals.userId,
+          projectId !== undefined, projectId, category, tags, subtasks && JSON.stringify(subtasks)],
+      )
+      task = result.rows[0]
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'constraint' in error &&
+        error.constraint === 'tasks_date_order') {
+        res.status(400).json({ message: 'Срок должен быть не раньше даты начала' })
+        return
+      }
+      throw error
+    }
     if (!task) {
       res.status(404).json({ message: 'Задача не найдена' })
       return
@@ -286,6 +441,15 @@ export function createApp(config: Config, pool: Pool) {
 
   app.use((_req, res) => { res.status(404).json({ message: 'Маршрут не найден' }) })
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (typeof error === 'object' && error !== null && 'type' in error && error.type === 'entity.too.large') {
+      res.status(413).json({ message: 'Запрос слишком большой' })
+      return
+    }
+    if (typeof error === 'object' && error !== null && 'constraint' in error &&
+      error.constraint === 'tasks_active_project') {
+      res.status(409).json({ message: 'Проект недоступен для назначения' })
+      return
+    }
     const malformedJson = error instanceof SyntaxError && 'type' in error && error.type === 'entity.parse.failed'
     res.status(malformedJson ? 400 : 500).json({
       message: malformedJson ? 'Некорректный JSON' : 'Ошибка сервера',

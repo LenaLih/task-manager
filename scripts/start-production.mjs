@@ -124,7 +124,8 @@ export async function startProduction({ env = process.env, launch = spawn, probe
       await delay(100, undefined, { signal: controller.signal })
     }
     if (!ready || stopping) throw new Error('API readiness failed')
-    const webEnv = { ...serverEnv }
+    // Empty overrides also prevent Next's dotenv loader from importing these keys.
+    const webEnv = { ...serverEnv, MAILJET_API_KEY: '', MAILJET_SECRET_KEY: '' }
     for (const key of ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET',
       'TEST_DATABASE_URL', 'E2E_DATABASE_URL']) delete webEnv[key]
     run(['node_modules/next/dist/bin/next', 'start', '--hostname', '0.0.0.0', '--port', port], webEnv, true)
