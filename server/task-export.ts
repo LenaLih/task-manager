@@ -1,5 +1,5 @@
 const columns = ['id', 'title', 'completed', 'description', 'status', 'priority', 'startsOn',
-  'dueOn', 'projectId', 'category', 'tags', 'subtasks'] as const
+  'dueOn', 'projectId', 'category', 'tags', 'subtasks', 'dueTime', 'dueZone', 'reminderMinutes'] as const
 
 function cell(value: unknown) {
   let text = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '')

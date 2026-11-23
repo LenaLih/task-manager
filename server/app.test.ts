@@ -479,6 +479,34 @@ describe.skipIf(!testUrl)('auth and task API (dedicated PostgreSQL)', { timeout:
     expect(fetched.body).toEqual(updated.body)
   })
 
+  it('persists timed deadlines, computes reminders in the saved zone and clears dependent fields', async () => {
+    const { token } = await register()
+    const auth = (req: ReturnType<ReturnType<typeof request>['post']>) =>
+      req.set('Origin', config.origin).auth(token, { type: 'bearer' })
+    const post = (body: object) => auth(request(instance.app).post('/api/tasks')).send(body)
+    const { body: legacy } = await post({ title: 'Date only', dueOn: '2026-12-30' }).expect(201)
+    expect(legacy).toMatchObject({ dueTime: null, dueZone: null, reminderMinutes: null, remindAt: null })
+    const fields = { dueOn: '2026-12-30', dueTime: '19:00', dueZone: 'Asia/Almaty', reminderMinutes: 15 }
+    const { body: task } = await post({ title: 'Cake', ...fields }).expect(201)
+    expect(task).toMatchObject({ ...fields, startsOn: null, remindAt: Date.parse('2026-12-30T13:45:00Z') })
+    const path = '/api/tasks/' + task.id
+    const patch = (body: object) => auth(request(instance.app).patch(path)).send(body)
+    await auth(request(instance.app).get(path)).expect(200).expect(task)
+    expect((await patch({ reminderMinutes: 60 }).expect(200)).body.remindAt).toBe(Date.parse('2026-12-30T13:00:00Z'))
+    expect((await patch({ reminderMinutes: 0 }).expect(200)).body.remindAt).toBe(Date.parse('2026-12-30T14:00:00Z'))
+    const day = await patch({ dueOn: '2026-03-29', dueTime: '19:00', dueZone: 'Europe/Berlin', reminderMinutes: 1440 }).expect(200)
+    expect(day.body.remindAt).toBe(Date.parse('2026-03-28T18:00:00Z'))
+    await patch({ dueTime: '02:30' }).expect(400)
+    await patch({ reminderMinutes: 30 }).expect(400)
+    expect((await patch({ reminderMinutes: null }).expect(200)).body).toMatchObject({ dueTime: '19:00', remindAt: null })
+    expect((await patch({ dueOn: null }).expect(200)).body).toMatchObject({
+      dueOn: null, dueTime: null, dueZone: null, reminderMinutes: null, remindAt: null,
+    })
+    await post({ title: 'No time', dueOn: '2026-12-30', reminderMinutes: 0 }).expect(400)
+    await post({ title: 'Bad zone', ...fields, dueZone: 'Unknown/Zone' }).expect(400)
+    await post({ title: 'Bad time', ...fields, dueTime: '24:00' }).expect(400)
+  })
+
   it('isolates projects, archives without losing tasks, and updates project totals', async () => {
     const owner = await register()
     const other = await register('other@example.com')

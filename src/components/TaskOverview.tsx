@@ -6,6 +6,8 @@ import { statusLabels, statusOf, taskStatuses } from '../types/task'
 import type { WorkspaceTask } from '../types/task'
 import { ErrorState } from './ErrorState'
 import { TaskForm } from './TaskForm'
+import { VoiceCapture } from './VoiceCapture'
+import { TaskNotificationPermission } from './TaskNotifications'
 
 type Props = {
   tasks: WorkspaceTask[]
@@ -53,7 +55,9 @@ function DatedTasks({ items, open }: {
 }) {
   return <ul className="my-day-rows">{items.map(({ task, day }) => <li key={task.id}>
     <button type="button" aria-label={`Открыть задачу: ${task.title}`} onClick={() => open(task)}>{task.title}</button>
-    <time dateTime={day}>{dateLabel(day, shortDate)}</time>
+    <time dateTime={task.dueOn === day && task.dueTime ? `${day}T${task.dueTime}` : day}>
+      {dateLabel(day, shortDate)}{task.dueOn === day && task.dueTime ? ` · ${task.dueTime}` : ''}
+    </time>
   </li>)}</ul>
 }
 
@@ -112,11 +116,13 @@ export function TaskOverview({ tasks, today, name, reminders, loading, failed, r
               <span aria-live="polite">Выполнено {done} из {current.length}</span>
             </div>
             <TaskForm onAdd={add} pending={adding} />
+            <VoiceCapture />
             {current.length ? <ul className="my-day-rows">{current.map(task => <li key={task.id}>
               <input type="checkbox" aria-label={`Выполнена задача: ${task.title}`} checked={task.completed}
                 disabled={busy.has(task.id)} onChange={() => toggle(task.id)} />
               <button type="button" aria-label={`Открыть задачу: ${task.title}`} data-completed={task.completed}
                 onClick={() => open(task)}>{task.title}</button>
+              {task.dueOn === today && task.dueTime && <time dateTime={`${today}T${task.dueTime}`}>{task.dueTime}</time>}
             </li>)}</ul> : <p>На сегодня задач пока нет.</p>}
           </>}
         {error && <p className="storage-error" role="alert">{error}</p>}
@@ -131,6 +137,7 @@ export function TaskOverview({ tasks, today, name, reminders, loading, failed, r
       </section>
       <DayProjects />
       <DayFinance />
+      <TaskNotificationPermission />
     </div>
     {!loading && !failed && !retrying && reminders.length > 0 && <details className="my-day-stats">
       <summary><h2 className="my-day-disclosure-title">Напоминания о дедлайнах</h2> ({reminders.length})</summary>

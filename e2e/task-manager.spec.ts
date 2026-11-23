@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { listenForEmailCode } from './local-smtp'
+import { apiOrigin, webOrigin } from './settings'
 
 const test = base.extend<{ browserDiagnostics: void }>({
   browserDiagnostics: [async ({ page }, use) => {
@@ -72,6 +73,368 @@ async function logout(page: Page) {
   await expect(page).toHaveURL(/\/login$/)
   await expect(page.getByRole('button', { name: 'Войти', exact: true })).toBeVisible()
 }
+
+async function registerVoiceUser(page: Page) {
+  const email = newEmail()
+  const api = new URL('/api/auth/register', apiOrigin)
+  api.hostname = new URL(webOrigin).hostname
+  // Model a separate client so the voice tests do not consume the auth suite's shared limit.
+  const response = await page.request.post(api.href, {
+    headers: { Origin: webOrigin, 'X-Forwarded-For': '192.0.2.10' },
+    data: { email, password },
+  })
+  expect(response.status()).toBe(201)
+  const session = await response.json() as { accessToken: string }
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('heading', { name: 'Мой день' })).toBeVisible()
+  return session.accessToken
+}
+
+test('voice preview edits recognition, excludes a task and saves only once', async ({ page }, info) => {
+  await page.addInitScript(() => {
+    let attempts = 0
+    class SpeechFixture {
+      lang = ''
+      continuous = false
+      onstart?: () => void
+      onend?: () => void
+      onresult?: (event: { results: Array<{ transcript: string }[] & { isFinal: boolean }> }) => void
+      start() {
+        if (this.lang !== 'ru-RU') throw Error('Unexpected recognition locale')
+        if (!this.continuous) throw Error('Continuous recognition must be enabled')
+        this.onstart?.()
+        const result = (transcript: string, isFinal = true) => Object.assign([{ transcript }], { isFinal })
+        attempts++
+        if (attempts === 1) {
+          this.onresult?.({ results: [result('Создай три задачи: купить чай.'), result('черновик', false)] })
+          setTimeout(() => this.onend?.(), 400)
+        } else if (attempts === 2) {
+          const first = result('Купить чай. Забрать заказ.')
+          this.onresult?.({ results: [first, result('позвони', false)] })
+          this.onresult?.({ results: [first, result('Позвонить другу.')] })
+        } else {
+          throw Error('Unexpected restart after manual stop')
+        }
+      }
+      stop() { this.onend?.() }
+      abort() { this.onend?.() }
+    }
+    Object.defineProperty(window, 'SpeechRecognition', { value: SpeechFixture })
+  })
+  await registerVoiceUser(page)
+  await page.getByRole('button', { name: 'Голосовой ввод' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Голосовая команда' })
+  const transcript = dialog.getByLabel('Текст команды')
+  await expect(transcript).toHaveValue('Создай три задачи: купить чай. Забрать заказ. Позвонить другу.')
+  await expect(dialog.getByRole('status')).toHaveText('Идёт запись…')
+  await expect(dialog.getByRole('button', { name: 'Разобрать команду' })).toBeDisabled()
+  await page.screenshot({ path: info.outputPath('voice-recording.png') })
+  await dialog.getByRole('button', { name: 'Завершить запись' }).click()
+  await expect(dialog.getByRole('button', { name: 'Начать запись' })).toBeEnabled()
+  await expect(dialog.getByRole('status')).toBeHidden()
+  await expect(transcript).toBeEditable()
+  await transcript.fill('Создай три задачи: завтра в десять утра купить чай, забрать заказ и позвонить другу')
+  await dialog.getByRole('button', { name: 'Разобрать команду' }).click()
+  await expect(dialog.getByRole('group', { name: 'Задача' })).toHaveCount(3)
+  await expect(dialog.getByLabel('Время').first()).toHaveValue('10:00')
+  await dialog.getByRole('button', { name: 'Исключить действие' }).last().click()
+  await page.screenshot({ path: info.outputPath('voice-light.png') })
+  const confirm = dialog.getByRole('button', { name: 'Подтвердить и сохранить' })
+  await confirm.evaluate((button: HTMLButtonElement) => { button.click(); button.click() })
+  await expect(dialog).toBeHidden()
+  await expect(page.getByText('Сохранено действий: 2.')).toBeVisible()
+  await page.getByRole('link', { name: 'Все задачи' }).click()
+  await expect(page.getByText('Купить чай', { exact: true })).toHaveCount(1)
+  await expect(page.getByText('Забрать заказ', { exact: true })).toHaveCount(1)
+  await expect(page.getByText('Позвонить другу', { exact: true })).toHaveCount(0)
+  await page.screenshot({ path: info.outputPath('voice-neighbor-tasks.png') })
+})
+
+test('voice preview resolves absolute Russian dates and asks about invalid dates', async ({ page, isMobile }, info) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'SpeechRecognition', { value: undefined })
+    Object.defineProperty(window, 'webkitSpeechRecognition', { value: undefined })
+  })
+  await registerVoiceUser(page)
+  if (isMobile) {
+    await page.getByRole('button', { name: 'Тёмная тема' }).click()
+    await expect(page.locator('.work-shell')).toHaveAttribute('data-theme', 'dark')
+  }
+  await page.clock.setFixedTime(new Date(2026, 10, 23, 12))
+  await page.getByRole('button', { name: 'Голосовой ввод' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Голосовая команда' })
+  const transcript = dialog.getByLabel('Текст команды')
+  const parse = dialog.getByRole('button', { name: 'Разобрать команду' })
+  const confirm = dialog.getByRole('button', { name: 'Подтвердить и сохранить' })
+  await transcript.fill('30 декабря приготовить торт в 19:00')
+  await parse.click()
+  await expect(dialog.getByLabel('Название задачи')).toHaveValue('Приготовить торт')
+  await expect(dialog.getByLabel('Дата')).toHaveValue('2026-12-30')
+  await expect(dialog.getByLabel('Время')).toHaveValue('19:00')
+  await expect(confirm).toBeEnabled()
+  await page.screenshot({ path: info.outputPath('voice-absolute-date.png') })
+  await transcript.fill('31 апреля приготовить торт в 19:00')
+  await parse.click()
+  await expect(dialog.getByLabel('Дата')).toHaveValue('')
+  await expect(dialog.getByText('Уточните дату.')).toBeVisible()
+  await expect(confirm).toBeDisabled()
+  await dialog.getByRole('button', { name: 'Отмена' }).click()
+  await expect(dialog).toBeHidden()
+  await page.getByRole('link', { name: 'Все задачи' }).click()
+  await expect(page.getByRole('heading', { name: 'Мои задачи' })).toBeVisible()
+  await expect(page.getByText('Всего: 0')).toBeVisible()
+  await page.screenshot({ path: info.outputPath('voice-absolute-date-tasks.png') })
+})
+
+test.describe('timed task reminders', () => {
+  test.use({ timezoneId: 'Asia/Almaty' })
+
+  test('persists voice deadlines and delivers browser notifications once after signing in again', async ({ page, context, isMobile }, info) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(window, 'SpeechRecognition', { value: undefined })
+      Object.defineProperty(window, 'webkitSpeechRecognition', { value: undefined })
+    })
+    const { email } = await register(page)
+    if (isMobile) {
+      await page.getByRole('button', { name: 'Тёмная тема' }).click()
+      await expect(page.locator('.work-shell')).toHaveAttribute('data-theme', 'dark')
+    }
+    await page.clock.setFixedTime(new Date('2026-12-30T13:40:00Z'))
+    await page.getByRole('button', { name: 'Голосовой ввод' }).click()
+    const voice = page.getByRole('dialog', { name: 'Голосовая команда' })
+    await voice.getByLabel('Текст команды').fill('30 декабря 2026 года приготовить торт в 19:00')
+    await voice.getByRole('button', { name: 'Разобрать команду' }).click()
+    await voice.getByLabel('Напоминание').selectOption('15')
+    await page.screenshot({ path: info.outputPath('reminder-voice.png') })
+    const created = page.waitForResponse(response => response.url().endsWith('/api/tasks') && response.request().method() === 'POST')
+    await voice.getByRole('button', { name: 'Подтвердить и сохранить' }).click()
+    const task = await (await created).json() as { id: string }
+    expect(task).toMatchObject({
+      title: 'Приготовить торт', description: '', dueOn: '2026-12-30', dueTime: '19:00',
+      dueZone: 'Asia/Almaty', reminderMinutes: 15, remindAt: Date.parse('2026-12-30T13:45:00Z'),
+    })
+    await page.goto('/tasks/' + task.id, { waitUntil: 'domcontentloaded' })
+    const editor = page.getByRole('dialog', { name: 'Свойства задачи' })
+    await expect(editor.getByLabel('Время дедлайна')).toHaveValue('19:00')
+    await expect(editor.getByLabel('Напоминание')).toHaveValue('15')
+    await expect(editor.getByLabel('Дата начала')).toHaveValue('')
+    await editor.getByLabel('Дата начала').fill('2026-12-29')
+    await editor.getByLabel('Время дедлайна').fill('19:15')
+    await editor.getByLabel('Напоминание').selectOption('60')
+    await editor.getByRole('button', { name: 'Сохранить задачу' }).click()
+    await expect(editor).toBeHidden()
+    await page.getByRole('button', { name: 'Открыть детали' }).click()
+    await expect(editor.getByLabel('Напоминание')).toHaveValue('60')
+    await editor.getByLabel('Напоминание').selectOption('')
+    await editor.getByRole('button', { name: 'Сохранить задачу' }).click()
+    await expect(editor).toBeHidden()
+    await page.getByRole('button', { name: 'Открыть детали' }).click()
+    await expect(editor.getByLabel('Напоминание')).toHaveValue('')
+    await editor.getByLabel('Напоминание').selectOption('15')
+    await page.screenshot({ path: info.outputPath('reminder-editor.png') })
+    await editor.getByRole('button', { name: 'Сохранить задачу' }).click()
+    await expect(editor).toBeHidden()
+    await logout(page)
+    await page.getByLabel('Email', { exact: true }).fill(email)
+    await page.getByLabel('Пароль', { exact: true }).fill(password)
+    const authenticated = page.waitForResponse(response => response.url().endsWith('/api/auth/login') && response.ok())
+    await page.getByRole('button', { name: 'Войти', exact: true }).click()
+    const { accessToken } = await (await authenticated).json() as { accessToken: string }
+    await expect(page.getByRole('heading', { name: 'Мой день' })).toBeVisible()
+    await expect(page.getByText('19:15', { exact: false }).last()).toBeVisible()
+    const headers = { Authorization: 'Bearer ' + accessToken, Origin: webOrigin }
+    const seed = async (data: object) => {
+      const result = await page.request.post('/api/tasks', {
+        headers,
+        data: { dueOn: '2026-12-30', dueTime: '19:00', dueZone: 'Asia/Almaty', reminderMinutes: 0, ...data },
+      })
+      expect(result.status()).toBe(201)
+      return await result.json() as { id: string }
+    }
+    await seed({ title: 'Час до дедлайна', dueTime: '20:00', reminderMinutes: 60 })
+    await seed({ title: 'День до дедлайна', dueOn: '2026-12-31', reminderMinutes: 1440 })
+    await seed({ title: 'Момент дедлайна' })
+    await seed({ title: 'Завершённая задача', completed: true })
+    const cancelled = await seed({ title: 'Без напоминания' })
+    expect((await page.request.patch('/api/tasks/' + cancelled.id, { headers, data: { reminderMinutes: null } })).ok()).toBe(true)
+    const deleted = await seed({ title: 'Удалённая задача' })
+    expect((await page.request.delete('/api/tasks/' + deleted.id, { headers })).status()).toBe(204)
+    await context.grantPermissions(['notifications'], { origin: webOrigin })
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await expect(page.getByText('Разрешены. Напоминания работают, пока приложение открыто.')).toBeVisible()
+    await page.screenshot({ path: info.outputPath('reminder-overview.png'), fullPage: true })
+    const shown = () => page.evaluate(async () => {
+      const worker = await navigator.serviceWorker.getRegistration()
+      return (await worker?.getNotifications() ?? []).map(notification => notification.body).sort()
+    })
+    expect(await shown()).toEqual([])
+    await page.clock.setFixedTime(new Date('2026-12-30T14:00:05Z'))
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+    const expected = ['День до дедлайна', 'Момент дедлайна', 'Приготовить торт', 'Час до дедлайна'].sort()
+    await expect.poll(shown).toEqual(expected)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await expect(page.getByRole('heading', { name: 'Мой день' })).toBeVisible()
+    await expect.poll(shown).toEqual(expected)
+    const worker = context.serviceWorkers().find(item => item.url().endsWith('/task-notifications.js'))
+    expect(worker).toBeDefined()
+    await worker!.evaluate(async () => {
+      const scope = globalThis as unknown as { registration: ServiceWorkerRegistration; dispatchEvent(event: Event): boolean }
+      const notifications = await scope.registration.getNotifications()
+      const notification = notifications.find(item => item.body === 'Приготовить торт')
+      if (!notification) throw Error('Missing task notification')
+      notifications.filter(item => item !== notification).forEach(item => item.close())
+      let navigation: Promise<unknown> | undefined
+      scope.dispatchEvent(Object.assign(new Event('notificationclick'), {
+        notification, waitUntil: (promise: Promise<unknown>) => { navigation = promise },
+      }))
+      await navigation
+    })
+    await expect(page).toHaveURL(new RegExp('/tasks/' + task.id + '$'))
+    await expect(editor.getByLabel('Время дедлайна')).toHaveValue('19:15')
+    await expect(editor.getByLabel('Напоминание')).toHaveValue('15')
+    await expect.poll(shown).toEqual([])
+    await editor.getByRole('button', { name: 'Отмена', exact: true }).click()
+    await page.getByRole('link', { name: 'Календарь', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Календарь', exact: true })).toBeVisible()
+    const calendar = page.locator(isMobile ? '.calendar-selected' : '.calendar-grid')
+    await expect(calendar.getByRole('button', { name: /Приготовить торт.*19:15/ })).toBeVisible()
+    await page.screenshot({ path: info.outputPath('reminder-calendar.png'), fullPage: true })
+    await page.getByRole('link', { name: 'Мои задачи', exact: true }).click()
+    await page.getByRole('button', { name: 'Kanban', exact: true }).click()
+    await expect(page.locator('.work-board').getByText('2026-12-30 · 19:15')).toBeVisible()
+    await page.screenshot({ path: info.outputPath('reminder-kanban.png'), fullPage: true })
+  })
+
+  test('asks for notification permission only on click and shows a denied state', async ({ page }) => {
+    await page.addInitScript(() => {
+      class NotificationFixture {
+        static permission = 'default'
+        static async requestPermission() {
+          document.documentElement.dataset.notificationRequests = '1'
+          this.permission = 'denied'
+          return 'denied'
+        }
+      }
+      Object.defineProperty(window, 'Notification', { value: NotificationFixture, configurable: true })
+    })
+    await registerVoiceUser(page)
+    const enable = page.getByRole('button', { name: 'Разрешить уведомления' })
+    await expect(enable).toBeVisible()
+    await expect(page.locator('html')).not.toHaveAttribute('data-notification-requests')
+    await enable.click()
+    await expect(page.locator('html')).toHaveAttribute('data-notification-requests', '1')
+    await expect(page.getByText(/Заблокированы. Разрешение можно изменить/)).toBeVisible()
+    await page.evaluate(() => {
+      Object.defineProperty(window, 'Notification', { value: undefined })
+      window.dispatchEvent(new Event('focus'))
+    })
+    await expect(page.getByText('Браузер не поддерживает уведомления в этом режиме.')).toBeVisible()
+  })
+})
+
+test('voice dictation limits silent restarts and stops on recognition errors', async ({ page }) => {
+  await page.addInitScript(() => {
+    let attempts = 0
+    class SpeechFixture {
+      onstart?: () => void
+      onend?: () => void
+      onerror?: (event: { error: string }) => void
+      start() {
+        this.onstart?.()
+        document.documentElement.dataset.speechAttempts = String(++attempts)
+        if (attempts < 3) this.onend?.()
+        else {
+          this.onerror?.({ error: attempts === 3 ? 'no-speech' : 'network' })
+          this.onend?.()
+        }
+      }
+      abort() { this.onend?.() }
+    }
+    Object.defineProperty(window, 'SpeechRecognition', { value: SpeechFixture })
+  })
+  await registerVoiceUser(page)
+  await page.getByRole('button', { name: 'Голосовой ввод' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Голосовая команда' })
+  await expect(dialog.getByRole('alert')).toContainText('Распознавание остановилось')
+  await expect(page.locator('html')).toHaveAttribute('data-speech-attempts', '2')
+  const start = dialog.getByRole('button', { name: 'Начать запись' })
+  await start.click()
+  await expect(dialog.getByRole('alert')).toContainText('Речь не распознана')
+  await start.click()
+  await expect(dialog.getByRole('alert')).toContainText('Сервис распознавания недоступен')
+  await expect(page.locator('html')).toHaveAttribute('data-speech-attempts', '4')
+  await expect(start).toBeEnabled()
+})
+
+test('voice dictation respects a native browser microphone denial', async ({ page, context }) => {
+  await registerVoiceUser(page)
+  const session = await context.newCDPSession(page)
+  await session.send('Browser.setPermission', {
+    permission: { name: 'microphone' }, setting: 'denied', origin: webOrigin, embeddedOrigin: webOrigin,
+  })
+  await page.getByRole('button', { name: 'Голосовой ввод' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Голосовая команда' })
+  await expect(dialog.getByRole('alert')).toContainText('Нет доступа к микрофону')
+  await expect(dialog.getByRole('button', { name: 'Начать запись' })).toBeEnabled()
+  await expect(dialog.getByLabel('Текст команды')).toBeEditable()
+})
+
+test('voice input handles microphone permissions and validates an expense', async ({ page }, info) => {
+  await page.addInitScript(() => {
+    class DeniedSpeech {
+      onerror?: (event: { error: string }) => void
+      start() { this.onerror?.({ error: 'not-allowed' }) }
+    }
+    Object.defineProperty(window, 'SpeechRecognition', { value: DeniedSpeech, configurable: true })
+    Object.defineProperty(window, 'webkitSpeechRecognition', { value: undefined, configurable: true })
+  })
+  const token = await registerVoiceUser(page)
+  const account = (id: string, name: string, currency: string) => page.request.put('/api/finance/accounts/' + id, {
+    headers: { Authorization: 'Bearer ' + token, Origin: new URL(page.url()).origin },
+    data: { name, currency, kind: 'cash', opening: '0' },
+  })
+  expect((await account(randomUUID(), 'Тестовый счёт KGS', 'KGS')).ok()).toBe(true)
+  expect((await account(randomUUID(), 'Тестовый счёт USD', 'USD')).ok()).toBe(true)
+  await page.getByRole('button', { name: 'Тёмная тема' }).click()
+  await expect(page.locator('.work-shell')).toHaveAttribute('data-theme', 'dark')
+  const voice = page.getByRole('button', { name: 'Голосовой ввод' })
+  await voice.click()
+  const dialog = page.getByRole('dialog', { name: 'Голосовая команда' })
+  await expect(dialog.getByRole('alert')).toContainText('Нет доступа к микрофону')
+  await dialog.getByRole('button', { name: 'Отмена' }).click()
+  await page.evaluate(() => Object.defineProperty(window, 'SpeechRecognition', { value: undefined }))
+  await voice.click()
+  await expect(dialog.getByRole('alert')).toContainText('нет распознавания речи')
+  const transcript = dialog.getByLabel('Текст команды')
+  const parse = dialog.getByRole('button', { name: 'Разобрать команду' })
+  await transcript.fill('Добавь расход 800 или 900 сом')
+  await parse.click()
+  const save = dialog.getByRole('button', { name: 'Подтвердить и сохранить' })
+  await expect(save).toBeDisabled()
+  await transcript.fill('Добавь расход 800 сом на продукты')
+  await parse.click()
+  await expect(save).toBeDisabled()
+  await expect(dialog.getByRole('option', { name: 'Тестовый счёт USD' })).toHaveCount(0)
+  await expect(dialog.getByRole('option', { name: 'Тестовый счёт KGS' })).toBeAttached()
+  await dialog.getByRole('combobox', { name: 'Счёт', exact: true }).selectOption({ label: 'Тестовый счёт KGS' })
+  await expect(save).toBeEnabled()
+  await page.screenshot({ path: info.outputPath('voice-dark.png') })
+  await dialog.getByRole('button', { name: 'Отмена' }).click()
+  const snapshot = () => page.request.get('/api/finance', { headers: { Authorization: 'Bearer ' + token } })
+  expect((await (await snapshot()).json()).entries).toHaveLength(0)
+  await voice.click()
+  await transcript.fill('Добавь расход 800 сом на продукты')
+  await parse.click()
+  await dialog.getByRole('combobox', { name: 'Счёт', exact: true }).selectOption({ label: 'Тестовый счёт KGS' })
+  await save.evaluate((button: HTMLButtonElement) => { button.click(); button.click() })
+  await expect(dialog).toBeHidden()
+  expect((await (await snapshot()).json()).entries).toMatchObject([
+    { amount: '80000', category: 'продукты', currency: 'KGS', kind: 'expense' },
+  ])
+  await page.getByRole('link', { name: 'К финансам' }).click()
+  await expect(page.getByText('продукты', { exact: true }).first()).toBeVisible()
+  await page.screenshot({ path: info.outputPath('voice-neighbor-finance.png') })
+})
 
 test('recovers a forgotten password through the local SMTP fixture', async ({ page }) => {
   const mail = await listenForEmailCode()
@@ -477,7 +840,7 @@ test('opens planning routes directly and persists a calendar deadline change', a
     await cell(first).getByRole('button').first().click()
     await page.getByRole('region', { name: 'Задачи выбранного дня' }).getByRole('button', { name: /Календарная задача/ }).click()
     const dialog = page.getByRole('dialog')
-    await dialog.getByLabel('Дедлайн').fill(next)
+    await dialog.getByLabel('Дедлайн', { exact: true }).fill(next)
     await dialog.getByRole('button', { name: 'Сохранить задачу' }).click()
     await expect(dialog).toBeHidden()
   } else {
@@ -531,7 +894,9 @@ test('plans a task and persists status changes from Kanban', async ({ page, isMo
   await dialog.getByLabel('Название', { exact: true }).fill('Подготовить релиз')
   await dialog.getByLabel('Описание').fill('Проверить список изменений')
   await dialog.getByLabel('Приоритет').selectOption('urgent')
-  await dialog.getByLabel('Дедлайн').fill('2030-06-01')
+  await dialog.getByLabel('Дедлайн', { exact: true }).fill('2030-06-01')
+  await dialog.getByLabel('Время дедлайна').fill('10:00')
+  await expect(dialog.getByLabel('Напоминание')).toHaveValue('')
   await dialog.getByRole('button', { name: 'Сохранить задачу' }).click()
   await expect(dialog).toBeHidden()
   await page.getByRole('button', { name: 'Kanban', exact: true }).click()
@@ -543,6 +908,7 @@ test('plans a task and persists status changes from Kanban', async ({ page, isMo
   await page.reload()
   await expect(page.getByRole('button', { name: 'Kanban', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(card.getByLabel('Статус задачи: Подготовить релиз')).toHaveValue('in-progress')
+  await expect(card.getByText('2030-06-01 · 10:00', { exact: true })).toBeVisible()
 
   await page.getByRole('link', { name: 'Проекты', exact: true }).click()
   await page.getByRole('button', { name: 'Новый проект', exact: true }).click()
@@ -558,6 +924,143 @@ test('plans a task and persists status changes from Kanban', async ({ page, isMo
   await expect(page.getByRole('button', { name: 'Список', exact: true })).toHaveAttribute('aria-pressed', 'true')
 })
 
+base('deletes from task details after confirmation and refreshes all task views', async ({ page, isMobile }, info) => {
+  const { token } = await register(page)
+  if (isMobile) {
+    await page.getByRole('button', { name: 'Тёмная тема' }).click()
+    await expect(page.locator('.work-shell')).toHaveAttribute('data-theme', 'dark')
+  }
+  const today = await page.locator('.my-day-heading time').getAttribute('datetime')
+  expect(today).toBeTruthy()
+  await page.getByRole('link', { name: 'Мои задачи', exact: true }).click()
+  await page.getByRole('button', { name: 'Новая задача', exact: true }).click()
+  const creation = page.getByRole('dialog', { name: 'Новая задача' })
+  await expect(creation.getByRole('button', { name: 'Удалить', exact: true })).toHaveCount(0)
+  await creation.getByLabel('Название', { exact: true }).fill('Тест удаления')
+  const description = 'Длинное описание для проверки редактора. '.repeat(45).trim()
+  await creation.getByLabel('Описание').fill(description)
+  await creation.getByLabel('Дедлайн', { exact: true }).fill(today!)
+  await creation.getByText(/^Подзадачи ·/).click()
+  await creation.getByRole('button', { name: 'Добавить подзадачу' }).click()
+  await creation.getByText(/^Подзадачи ·/).click()
+  await creation.getByRole('button', { name: 'Сохранить задачу' }).click()
+  await expect(creation.getByLabel('Подзадача 1', { exact: true })).toBeFocused()
+  await creation.getByLabel('Подзадача 1', { exact: true }).fill('Проверить подзадачу')
+  const created = page.waitForResponse(response => response.url().endsWith('/api/tasks') && response.request().method() === 'POST')
+  await creation.getByRole('button', { name: 'Сохранить задачу' }).click()
+  const { id } = await (await created).json() as { id: string }
+  await expect(creation).toBeHidden()
+  await page.getByRole('button', { name: 'Свойства задачи: Тест удаления' }).click()
+  const editor = page.getByRole('dialog', { name: 'Свойства задачи' })
+  const title = 'Тест удаления после правки ' + 'длинноеназвание'.repeat(13)
+  await editor.getByLabel('Название', { exact: true }).fill(title)
+  await editor.getByRole('button', { name: 'Сохранить задачу' }).click()
+  await expect(editor).toBeHidden()
+  await expect(page.getByRole('button', { name: title, exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Kanban', exact: true }).click()
+  await expect(page.locator('.work-board').getByText(title, { exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'Обзор', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Открыть задачу: ' + title })).toBeVisible()
+  await page.getByRole('link', { name: 'Календарь', exact: true }).first().click()
+  const calendarTask = page.locator(isMobile ? '.calendar-selected' : '.calendar-grid')
+    .getByRole('button', { name: new RegExp(title) })
+  await calendarTask.click()
+  await editor.getByRole('button', { name: 'Отмена', exact: true }).click()
+  await page.goto('/tasks/' + id, { waitUntil: 'domcontentloaded' })
+  const reopen = page.getByRole('button', { name: 'Открыть детали' })
+  await expect(editor).toBeVisible()
+  await expect(editor.getByLabel('Название', { exact: true })).toHaveValue(title)
+  await expect(editor.getByLabel('Описание')).toHaveValue(description)
+  await page.screenshot({ path: info.outputPath('task-editor-compact.png') })
+  await editor.getByText(/^Подзадачи ·/).click()
+  await expect(editor.getByLabel('Подзадача 1', { exact: true })).toHaveValue('Проверить подзадачу')
+  await editor.getByText('История задачи', { exact: true }).click()
+  await expect(editor.getByText(/Изменение: Название/)).toBeVisible()
+  const remove = editor.getByRole('button', { name: 'Удалить', exact: true })
+  const scrollArea = editor.locator('.task-editor-fields')
+  await editor.getByLabel('Описание').evaluate((field: HTMLTextAreaElement) => { field.style.height = '650px' })
+  await scrollArea.evaluate(element => { element.scrollTop = element.scrollHeight })
+  expect(await scrollArea.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+  const actionButtons = editor.locator('.task-editor-actions button')
+  expect(await actionButtons.evaluateAll(buttons => new Set(buttons.map(button =>
+    button.getBoundingClientRect().height)).size)).toBe(1)
+  expect(await editor.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  const footer = editor.locator('.task-editor-footer')
+  await expect(footer).toBeInViewport()
+  await expect(remove).toBeInViewport()
+  await editor.getByLabel('Описание').evaluate((field: HTMLTextAreaElement) => { field.style.removeProperty('height') })
+  await page.screenshot({ path: info.outputPath('task-delete-editor.png') })
+  await remove.click()
+  const confirm = page.getByRole('alertdialog', { name: 'Удалить задачу?' })
+  await expect(confirm.getByText(new RegExp(title))).toBeVisible()
+  await expect(confirm.getByText('Это действие нельзя отменить.')).toBeVisible()
+  await expect(page.locator('dialog[open]')).toHaveCount(1)
+  await expect(confirm.getByRole('button', { name: 'Отмена', exact: true })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(confirm.getByRole('button', { name: 'Удалить задачу', exact: true })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(editor).toBeVisible()
+  await expect(confirm).toBeHidden()
+  await expect(remove).toBeFocused()
+  await editor.getByLabel('Название', { exact: true }).fill('Несохранённая правка')
+
+  let attempts = 0
+  let release = () => {}
+  const requestGate = new Promise<void>(resolve => { release = resolve })
+  const taskUrl = '**/api/tasks/' + id
+  await page.route(taskUrl, async route => {
+    if (route.request().method() !== 'DELETE') return route.continue()
+    attempts++
+    if (attempts === 1) return route.fulfill({ status: 503, json: { message: 'Временная ошибка' } })
+    await requestGate
+    await route.continue()
+  })
+  await remove.click()
+  const confirmDelete = confirm.getByRole('button', { name: 'Удалить задачу', exact: true })
+  await confirmDelete.click()
+  await expect(confirm.getByRole('alert')).toContainText('Не удалось удалить задачу')
+  await page.screenshot({ path: info.outputPath('task-delete-confirm.png') })
+  await confirm.getByRole('button', { name: 'Отмена', exact: true }).click()
+  await expect(editor.getByLabel('Название', { exact: true })).toHaveValue('Несохранённая правка')
+  await remove.click()
+  try {
+    await confirmDelete.evaluate((button: HTMLButtonElement) => { button.click(); button.click() })
+    await expect(confirm.getByRole('button', { name: 'Удаляем…' })).toBeDisabled()
+    await expect(confirm.getByRole('button', { name: 'Отмена', exact: true })).toBeDisabled()
+  } finally {
+    release()
+  }
+  await expect(confirm).toBeHidden()
+  await expect(editor).toBeHidden()
+  expect(attempts).toBe(2)
+  await expect(page.getByText('Задача недоступна.')).toBeVisible()
+  await expect(reopen).toHaveCount(0)
+  await page.getByRole('link', { name: 'Календарь', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Календарь', exact: true })).toBeVisible()
+  await expect(calendarTask).toHaveCount(0)
+  await page.screenshot({ path: info.outputPath('task-delete-calendar.png') })
+  await page.getByRole('link', { name: 'Мои задачи', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Kanban', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const board = page.locator('.work-board')
+  await expect(board).toBeVisible()
+  await expect(board.getByText(title, { exact: true })).toHaveCount(0)
+  await page.screenshot({ path: info.outputPath('task-delete-kanban.png') })
+  await page.getByRole('button', { name: 'Список', exact: true }).click()
+  await expect(page.getByRole('button', { name: title, exact: true })).toHaveCount(0)
+  await page.screenshot({ path: info.outputPath('task-delete-list.png') })
+  await page.getByRole('link', { name: 'Обзор', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Мой день' })).toBeVisible()
+  await expect(page.getByText('На сегодня задач пока нет.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Открыть задачу: ' + title })).toHaveCount(0)
+  await page.screenshot({ path: info.outputPath('task-delete-overview.png') })
+
+  const headers = { Authorization: 'Bearer ' + token }
+  expect((await page.request.get('/api/tasks/' + id, { headers })).status()).toBe(404)
+  const history = await page.request.get('/api/tasks/' + id + '/history', { headers })
+  expect(history.ok()).toBe(true)
+  expect(await history.json()).toMatchObject([{ action: 'deleted' }, { action: 'updated' }, { action: 'created' }])
+})
+
 test('creates a project, completes tasks in bulk and opens their history', async ({ page }) => {
   await register(page)
   await page.getByRole('link', { name: 'Проекты', exact: true }).click()
@@ -571,6 +1074,7 @@ test('creates a project, completes tasks in bulk and opens their history', async
   await dialog.getByLabel('Название', { exact: true }).fill('Задача проекта')
   await dialog.getByLabel('Категория').fill('Релиз')
   await dialog.getByLabel('Теги через запятую').fill('qa')
+  await dialog.getByText(/^Подзадачи ·/).click()
   await dialog.getByRole('button', { name: 'Добавить подзадачу', exact: true }).click()
   await dialog.getByLabel('Подзадача 1', { exact: true }).fill('Проверить карточку')
   await dialog.getByLabel('Подзадача 1 выполнена').check()
