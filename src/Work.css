@@ -117,6 +117,70 @@
 .work-dialog textarea { resize: vertical; }
 .work-field-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .work-dialog-actions { justify-content: flex-end; }
+.work-shell .work-dialog-actions button.task-delete-button { color: var(--work-error); border-color: currentColor; }
+.work-dialog.task-editor {
+  --task-editor-padding: clamp(14px, 4vw, 24px);
+  width: min(620px, calc(100% - 24px));
+  padding: 0;
+  overflow: hidden;
+}
+.task-editor .task-editor-form {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
+  max-height: calc(100dvh - 26px);
+}
+.task-editor .task-editor-form[hidden] { display: none; }
+.task-editor-form > h2 { padding: 16px var(--task-editor-padding) 8px; }
+.task-editor-fields {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  overflow: auto;
+  padding: 8px var(--task-editor-padding) 14px;
+  scroll-padding-block: 8px;
+}
+.task-editor-fields label { gap: 4px; }
+.work-shell .task-editor .task-editor-fields :is(input:not([type=checkbox]), select, textarea) {
+  width: 100%;
+  min-width: 0;
+  font-size: 14px;
+}
+.task-editor-fields textarea { min-height: 58px; line-height: 1.4; }
+.task-editor-section { border-top: 1px solid var(--work-border); }
+.task-editor-section summary { padding-block: 8px; font-size: 14px; cursor: pointer; }
+.task-editor-footer {
+  display: grid;
+  gap: 8px;
+  padding: 10px var(--task-editor-padding);
+  border-top: 1px solid var(--work-border);
+}
+.work-shell .work-dialog-actions.task-editor-actions button {
+  min-height: 44px;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+.task-editor-actions button:not(.add-button):hover:not(:disabled) { background: var(--work-highlight); }
+.task-editor-actions button:disabled { opacity: .65; }
+.work-dialog.task-editor-confirming { width: min(420px, calc(100% - 24px)); }
+.task-delete-confirmation {
+  display: grid;
+  gap: 12px;
+  max-height: calc(100dvh - 26px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: var(--task-editor-padding);
+}
+.task-delete-name { margin-bottom: 6px; font-weight: 700; }
+@media (max-width: 480px) {
+  .work-shell .work-dialog-actions.task-editor-actions button { padding-inline: 10px; }
+}
+@media (max-width: 345px) {
+  .task-editor .work-field-pair { grid-template-columns: minmax(0, 1fr); }
+  .work-shell .work-dialog-actions.task-editor-actions button { padding-inline: 8px; }
+}
 .work-settings { display: grid; gap: 20px; max-width: 1100px; margin-inline: auto; }
 .work-settings-header { display: grid; gap: 6px; }
 .work-settings-header h1 { margin: 0; font-size: clamp(28px, 3vw, 36px); letter-spacing: -.04em; }
@@ -221,8 +285,8 @@
   border: 1px solid var(--work-border); background: var(--work-surface); color: var(--work-text);
   border-radius: 7px; padding: 6px 9px; font-size: 13px;
 }
-.task-subtasks { margin: 0; min-width: 0; border: 1px solid var(--work-border); border-radius: 10px; padding: 9px; }
-.task-subtasks legend, .task-history { font-size: 13px; }
+.task-subtasks { margin: 0; min-width: 0; border: 0; padding: 2px 0 6px; }
+.task-history { font-size: 13px; }
 .task-subtask { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 7px; margin-bottom: 8px; }
 .task-history { padding-inline-start: 20px; }
 .work-dialog { overflow-y: auto; }
@@ -331,6 +395,7 @@
 .my-day-today { background: var(--work-highlight); }
 .my-day-card header { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; }
 .my-day-card h2 { font-size: 18px; }
+.task-notification-actions { margin-inline-start: 0; }
 .my-day-card h3 { font-size: 13px; }
 .my-day-card a, .my-day-stats summary { color: var(--work-accent); text-underline-offset: 3px; }
 .my-day-card header a { font-size: 13px; }
@@ -358,6 +423,43 @@
 .my-day-balances dd { margin: 4px 0 0; font-weight: 700; }
 .my-day-stats summary { cursor: pointer; font-size: 14px; }
 .my-day-disclosure-title { display: inline; font: inherit; }
+.voice-trigger, .voice-dialog button {
+  min-height: 44px;
+  border: 1px solid var(--work-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--work-accent);
+  background: var(--work-surface);
+  font: inherit;
+}
+.voice-trigger { display: inline-flex; align-items: center; justify-self: start; gap: 8px; }
+.voice-trigger:hover, .voice-dialog button:hover:not(:disabled) { border-color: var(--work-accent); }
+.voice-dialog button.add-button { background: var(--work-accent); color: var(--work-surface); }
+.voice-dialog button:disabled { opacity: .6; }
+.voice-dialog { width: min(540px, calc(100% - 24px)); max-height: calc(100dvh - 24px); overflow: hidden; }
+.voice-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; }
+.voice-body { display: grid; align-content: start; gap: 12px; overflow: auto; }
+.voice-dialog fieldset { display: grid; gap: 12px; }
+.voice-dialog fieldset { min-inline-size: 0; border: 0; padding: 0; }
+.voice-dialog .voice-card { border: 1px solid var(--work-border); border-radius: 10px; padding: 12px; }
+.voice-card legend { padding-inline: 6px; font-weight: 700; }
+.voice-dialog label { min-width: 0; }
+.voice-dialog :is(input:not([type=checkbox]), select, textarea) { width: 100%; min-width: 0; }
+.voice-dialog textarea { resize: vertical; }
+.voice-dialog label.voice-once { display: flex; align-items: center; flex-wrap: wrap; }
+.voice-once input { accent-color: var(--work-accent); }
+.voice-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 135px), 1fr)); gap: 10px; }
+.voice-buttons { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.voice-status:empty { display: none; }
+.voice-status[data-recording=true]::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-inline-end: 7px;
+  background: var(--work-error);
+  border-radius: 50%;
+}
 .my-day-stats dl { margin-block: 10px; }
 @media (max-width: 840px) {
   .my-day-grid { grid-template-columns: minmax(0, 1fr); }

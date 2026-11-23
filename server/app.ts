@@ -32,6 +32,9 @@ const credentials = z.object({
 })
 const taskStatus = z.enum(['backlog', 'todo', 'in-progress', 'done'])
 const projectIdInput = z.uuid().nullable()
+const taskZone = z.string().max(100).regex(/^[A-Za-z][A-Za-z0-9_+/-]*$/).refine(zone => {
+  try { new Intl.DateTimeFormat('en', { timeZone: zone }); return true } catch { return false }
+})
 const subtask = z.object({ id: z.uuid(), title: z.string().trim().min(1).max(120), completed: z.boolean() }).strict()
 const input = z.object({
   title: z.string().trim().min(1).max(300),
@@ -41,6 +44,9 @@ const input = z.object({
   priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
   startsOn: z.iso.date().refine((date) => !date.startsWith('0000-')).nullable().optional(),
   dueOn: z.iso.date().refine((date) => !date.startsWith('0000-')).nullable().optional(),
+  dueTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
+  dueZone: taskZone.nullable().optional(),
+  reminderMinutes: z.literal([0, 15, 60, 1440]).nullable().optional(),
   projectId: projectIdInput.optional(),
   category: z.string().trim().max(60).optional(),
   tags: z.array(z.string().trim().min(1).max(32)).max(12)
@@ -67,6 +73,10 @@ type TaskRow = {
   priority: NonNullable<TaskInput['priority']>
   startsOn: string | null
   dueOn: string | null
+  dueTime: string | null
+  dueZone: string | null
+  reminderMinutes: NonNullable<TaskInput['reminderMinutes']> | null
+  remindAt: number | null
   projectId: string | null
   category: string
   tags: string[]
@@ -74,6 +84,11 @@ type TaskRow = {
 }
 const taskColumns = `id, title, completed, description, status, priority,
   to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(due_on, 'YYYY-MM-DD') AS "dueOn",
+  left(due_time::text, 5) AS "dueTime", due_zone AS "dueZone", reminder_minutes AS "reminderMinutes",
+  CASE WHEN reminder_minutes = 1440 THEN
+    extract(epoch FROM (((due_on - 1) + due_time) AT TIME ZONE due_zone))::float8 * 1000
+  ELSE (extract(epoch FROM ((due_on + due_time) AT TIME ZONE due_zone))::float8 - reminder_minutes * 60) * 1000
+  END AS "remindAt",
   project_id AS "projectId", category, tags, subtasks`
 const consistentCompletion = ({ status, completed }: TaskInput) =>
   status === undefined || completed === undefined || (status === 'done') === completed
@@ -368,7 +383,7 @@ export function createApp(config: Config, pool: Pool) {
       res.status(400).json({ message: 'Проверьте название и параметры задачи' })
       return
     }
-    const { title, completed, description = '', priority = 'medium', startsOn, dueOn,
+    const { title, completed, description = '', priority = 'medium', startsOn, dueOn, dueTime, dueZone, reminderMinutes,
       projectId, category = '', tags = [], subtasks = [] } = parsed.data
     if (startsOn && dueOn && startsOn > dueOn) {
       res.status(400).json({ message: 'Срок должен быть не раньше даты начала' })
@@ -377,10 +392,10 @@ export function createApp(config: Config, pool: Pool) {
     const status = parsed.data.status ?? (completed ? 'done' : 'todo')
     const { rows: [task] } = await pool.query<TaskRow>(
       `INSERT INTO public.tasks (id, user_id, title, completed, description, status, priority, starts_on,
-         due_on, project_id, category, tags, subtasks)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING ${taskColumns}`,
+         due_on, project_id, category, tags, subtasks, due_time, due_zone, reminder_minutes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING ${taskColumns}`,
       [randomUUID(), res.locals.userId, title, status === 'done', description, status, priority,
-        startsOn, dueOn, projectId, category, tags, JSON.stringify(subtasks)],
+        startsOn, dueOn, projectId, category, tags, JSON.stringify(subtasks), dueTime, dueZone, reminderMinutes],
     )
     res.status(201).json(task)
   })
@@ -391,8 +406,14 @@ export function createApp(config: Config, pool: Pool) {
       res.status(400).json({ message: 'Некорректная задача' })
       return
     }
-    const { title, completed, description, status, priority, startsOn, dueOn,
+    const { title, completed, description, status, priority, startsOn, dueOn, dueTime, dueZone, reminderMinutes,
       projectId, category, tags, subtasks } = parsed.data
+    const clearsDate = dueOn === null
+    const clearsTime = clearsDate || dueTime === null
+    if (clearsTime && (dueTime || dueZone || reminderMinutes != null)) {
+      res.status(400).json({ message: 'Укажите дату и время дедлайна для напоминания.' })
+      return
+    }
     const nextStatus = `COALESCE($4::text, CASE WHEN $3::boolean THEN 'done'
       WHEN $3 = false AND status = 'done' THEN 'todo' ELSE status END)`
     let task: TaskRow | undefined
@@ -405,11 +426,17 @@ export function createApp(config: Config, pool: Pool) {
          due_on = CASE WHEN $8::boolean THEN $9::date ELSE due_on END,
          project_id = CASE WHEN $12::boolean THEN $13::text ELSE project_id END,
          category = COALESCE($14, category), tags = COALESCE($15, tags),
-         subtasks = COALESCE($16, subtasks)
+         subtasks = COALESCE($16, subtasks),
+         due_time = CASE WHEN $17::boolean THEN $18::time ELSE due_time END,
+         due_zone = CASE WHEN $19::boolean THEN $20::text ELSE due_zone END,
+         reminder_minutes = CASE WHEN $21::boolean THEN $22::integer ELSE reminder_minutes END
          WHERE id = $10 AND user_id = $11 RETURNING ${taskColumns}`,
         [title, description, completed, status, priority, startsOn !== undefined, startsOn,
           dueOn !== undefined, dueOn, req.params.id, res.locals.userId,
-          projectId !== undefined, projectId, category, tags, subtasks && JSON.stringify(subtasks)],
+          projectId !== undefined, projectId, category, tags, subtasks && JSON.stringify(subtasks),
+          clearsDate || dueTime !== undefined, clearsDate ? null : dueTime,
+          clearsTime || dueZone !== undefined, clearsTime ? null : dueZone,
+          clearsTime || reminderMinutes !== undefined, clearsTime ? null : reminderMinutes],
       )
       task = result.rows[0]
     } catch (error) {
@@ -441,6 +468,12 @@ export function createApp(config: Config, pool: Pool) {
 
   app.use((_req, res) => { res.status(404).json({ message: 'Маршрут не найден' }) })
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (typeof error === 'object' && error !== null &&
+      (('constraint' in error && error.constraint === 'tasks_timed_deadline') ||
+        ('code' in error && error.code === '22023'))) {
+      res.status(400).json({ message: 'Проверьте дату, время, часовой пояс и напоминание.' })
+      return
+    }
     if (typeof error === 'object' && error !== null && 'type' in error && error.type === 'entity.too.large') {
       res.status(413).json({ message: 'Запрос слишком большой' })
       return

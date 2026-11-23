@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import { Provider } from 'react-redux'
 import { createStore } from '../store'
 import { AuthBootstrap } from '../components/AuthBootstrap'
+import { TaskNotificationScheduler } from '../components/TaskNotifications'
 
 type ProvidersProps = { children: ReactNode }
 
@@ -13,7 +14,10 @@ export default function Providers({ children }: ProvidersProps) {
 
   return (
     <Provider store={store}>
-      <AuthBootstrap>{children}</AuthBootstrap>
+      <AuthBootstrap>
+        <TaskNotificationScheduler />
+        {children}
+      </AuthBootstrap>
     </Provider>
   )
 }

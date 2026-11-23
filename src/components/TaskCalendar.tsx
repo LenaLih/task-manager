@@ -47,7 +47,7 @@ export function TaskCalendar({ tasks, busy, open, move }: {
       }}
       onDragEnd={() => { dragging.current = null; setTarget('') }}>
       <strong>{task.title}</strong>
-      <small>{priorityLabels[priority]} · {statusLabels[taskStatus]}</small>
+      <small>{task.dueTime && `${task.dueTime} · `}{priorityLabels[priority]} · {statusLabels[taskStatus]}</small>
     </button>
   }
 

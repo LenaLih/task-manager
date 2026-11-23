@@ -199,7 +199,9 @@ export const taskApi = createApi({ reducerPath: 'api', baseQuery, tagTypes: ['Ta
   }),
   deleteTask: builder.mutation<void, string>({
     query: id => ({ url: `/tasks/${id}`, method: 'DELETE' }),
-    invalidatesTags: (_result, error, id) => error ? [] : [{ type: 'Task', id: 'LIST' }, 'Project', { type: 'History', id }],
+    invalidatesTags: (_result, error, id) => error ? [] : [
+      { type: 'Task', id: 'LIST' }, { type: 'Task', id }, 'Project', { type: 'History', id },
+    ],
   }),
   updateTask: builder.mutation<WorkspaceTask, Partial<WorkspaceTask> & Pick<Task, 'id'>>({
     query: ({ id, ...body }) => ({ url: `/tasks/${id}`, method: 'PATCH', body }),

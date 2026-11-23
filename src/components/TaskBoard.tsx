@@ -46,7 +46,9 @@ export function TaskBoard({ tasks, busy, move, open }: {
                 <button type="button" onClick={() => open(task)}>{task.title}</button>
                 <div className="work-task-meta">
                   <span data-priority={task.priority}>{priorityLabels[task.priority ?? 'medium']}</span>
-                  {task.dueOn && <time dateTime={task.dueOn}>{task.dueOn}</time>}
+                  {task.dueOn && <time dateTime={task.dueTime ? `${task.dueOn}T${task.dueTime}` : task.dueOn}>
+                    {task.dueOn}{task.dueTime && ` · ${task.dueTime}`}
+                  </time>}
                 </div>
                 {task.category && <small className="work-board-category">{task.category}</small>}
                 {!!task.tags?.length && <div className="work-tags">{task.tags.map(tag => <span key={tag}>{tag}</span>)}</div>}

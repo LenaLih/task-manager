@@ -7,6 +7,10 @@
 export type TaskFilter = 'all' | 'active' | 'completed'
 export const taskStatuses = ['backlog', 'todo', 'in-progress', 'done'] as const
 export const taskPriorities = ['low', 'medium', 'high', 'urgent'] as const
+export const reminderOptions = [
+  [0, 'В момент дедлайна'], [15, 'За 15 минут'], [60, 'За 1 час'], [1440, 'За 1 день'],
+] as const
+export type ReminderMinutes = typeof reminderOptions[number][0]
 export const statusLabels = {
   backlog: 'Запланировано', todo: 'К выполнению', 'in-progress': 'В работе', done: 'Готово',
 }
@@ -31,6 +35,9 @@ export type TaskDetails = {
   priority: TaskPriority
   startsOn: string | null
   dueOn: string | null
+  dueTime: string | null
+  dueZone: string | null
+  reminderMinutes: ReminderMinutes | null
   projectId: string | null
   category: string
   tags: string[]
@@ -38,7 +45,7 @@ export type TaskDetails = {
 }
 export type BulkAction = { type: 'status'; status: TaskStatus } |
   { type: 'project'; projectId: string | null } | { type: 'delete' }
-export type WorkspaceTask = Task & Partial<TaskDetails>
+export type WorkspaceTask = Task & Partial<TaskDetails> & { remindAt?: number | null }
 
 export function statusOf(task: WorkspaceTask): TaskStatus {
   return task.status ?? (task.completed ? 'done' : 'todo')

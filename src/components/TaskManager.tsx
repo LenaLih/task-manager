@@ -93,7 +93,8 @@ function TaskManager({ directory = false, projectId, tasksOnly = false, planning
   )
   const project = useProjectQuery(projectId ?? '', { skip: !projectId })
   const directTask = useTaskQuery(taskId ?? '', { skip: !taskId })
-  const detail = directTask.data
+  const missingTask = directTask.isError && 'status' in directTask.error && directTask.error.status === 404
+  const detail = missingTask ? undefined : directTask.currentData
   const activeEditor = editor ?? (detailsDismissed ? undefined : detail)
   const tasks = projectId ? allTasks.filter(task => task.projectId === projectId) : allTasks
   const [addTask, addState] = useAddTaskMutation()
@@ -275,7 +276,7 @@ function TaskManager({ directory = false, projectId, tasksOnly = false, planning
         {finance ? <FinanceWorkspace /> : settings ? <AccountSettings theme={theme} /> : taskId ? <section className="task-panel work-settings-card">
           <Link href="/tasks">К задачам</Link>
           {directTask.isLoading && <p role="status">Загружаем задачу…</p>}
-          {directTask.isError && ('status' in directTask.error && directTask.error.status === 404
+          {directTask.isError && (missingTask
             ? <p role="alert">Задача недоступна.</p>
             : <ErrorState message="Не удалось загрузить задачу." retryLabel="Повторить"
               pending={directTask.isFetching} onRetry={directTask.refetch} />)}
