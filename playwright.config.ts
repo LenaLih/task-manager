@@ -16,7 +16,8 @@ export default defineConfig({
   use: {
     baseURL: webOrigin,
     browserName: 'chromium',
-    channel: process.env.E2E_CHROME === '1' ? 'chrome' : undefined,
+    // Use full Chromium headless for native speech recognition and browser notifications.
+    channel: process.env.E2E_CHROME === '1' ? 'chrome' : 'chromium',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
