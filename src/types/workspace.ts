@@ -1,7 +1,7 @@
 import { addDays } from './planning'
 import type { Project, TaskFilter, WorkspaceTask } from './task'
 
-export type Profile = { name: string; email: string; theme: 'light' | 'dark' | null; reminderDays: 0 | 1 | 3 | 7 }
+export type Profile = { name: string; email: string; theme: 'light' | 'dark' | null; reminderDays: 0 | 1 | 3 | 7; role?: 'user' | 'admin' }
 export type ActiveSession = { id: string; device: string; createdAt: string; expires: number; current: boolean }
 export type SavedFilter = {
   name: string

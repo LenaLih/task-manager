@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { listenForEmailCode } from './local-smtp'
 import { apiOrigin, webOrigin } from './settings'
+import { prepareDatabase } from './database'
 
 const test = base.extend<{ browserDiagnostics: void }>({
   browserDiagnostics: [async ({ page }, use) => {
@@ -89,6 +90,57 @@ async function registerVoiceUser(page: Page) {
   await expect(page.getByRole('heading', { name: 'Мой день' })).toBeVisible()
   return session.accessToken
 }
+
+test('admin dashboard uses PostgreSQL and supports both themes', async ({ page }, info) => {
+  await page.goto('/admin')
+  await expect(page).toHaveURL(/\/login$/)
+  const { email } = await register(page)
+  const adminLink = page.getByRole('link', { name: 'Администрирование' })
+  await expect(adminLink).toHaveCount(0)
+  await page.goto('/admin')
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Доступ разрешён только администраторам.')
+
+  const pool = await prepareDatabase()
+  try {
+    await pool.query("UPDATE public.users SET role = 'admin' WHERE email = $1", [email])
+    await page.reload()
+    await expect(adminLink).toHaveAttribute('aria-current', 'page')
+    await expect(page.getByRole('heading', { name: 'Администрирование' })).toBeVisible()
+    await expect(page.getByText('Регистрации сегодня')).toBeVisible()
+    await page.getByLabel('Период').selectOption('90')
+    await expect(page.locator('.admin-bars > div')).toHaveCount(90)
+    await page.getByRole('searchbox').fill(email)
+    const table = page.getByRole('table')
+    await expect(table.getByRole('row')).toHaveCount(2)
+    await expect(table.getByText(email, { exact: true })).toBeVisible()
+    await table.getByRole('button', { name: 'Email' }).click()
+    await expect(table.getByRole('columnheader', { name: 'Email' })).toHaveAttribute('aria-sort', 'ascending')
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      await page.evaluate(() => window.innerWidth),
+    )
+    const tableRegion = page.getByRole('region', { name: 'Таблица пользователей' })
+    if (info.project.name === 'desktop-chromium') {
+      expect(await tableRegion.evaluate(region => region.scrollWidth)).toBeLessThanOrEqual(
+        await tableRegion.evaluate(region => region.clientWidth),
+      )
+    } else {
+      await tableRegion.evaluate(region => { region.scrollLeft = region.scrollWidth })
+      expect(await tableRegion.evaluate(region => region.scrollLeft)).toBeGreaterThan(0)
+      await tableRegion.evaluate(region => { region.scrollLeft = 0 })
+    }
+    await page.screenshot({ path: info.outputPath('admin-light.png'), fullPage: true })
+    await page.getByRole('button', { name: 'Тёмная тема' }).click()
+    await expect(page.locator('.work-shell')).toHaveAttribute('data-theme', 'dark')
+    await page.screenshot({ path: info.outputPath('admin-dark.png'), fullPage: true })
+    await page.getByRole('link', { name: 'Аналитика' }).click()
+    await expect(page.getByRole('heading', { name: 'Аналитика' })).toBeVisible()
+    await expect(page.getByText('Создано за период', { exact: true })).toBeVisible()
+    await page.screenshot({ path: info.outputPath('analytics-dark.png'), fullPage: true })
+  } finally {
+    await pool.query("UPDATE public.users SET role = 'user' WHERE email = $1", [email])
+    await pool.end()
+  }
+})
 
 test('voice preview edits recognition, excludes a task and saves only once', async ({ page }, info) => {
   await page.addInitScript(() => {

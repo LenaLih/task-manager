@@ -7,6 +7,7 @@ import type { AuthState, Session } from './auth'
 import type { BulkAction, HistoryEntry, Project, ProjectDraft, Task, WorkspaceTask } from '../types/task'
 import type { Analytics } from '../types/planning'
 import type { ActiveSession, Profile, SavedFilter } from '../types/workspace'
+import type { AdminOverview, AdminUsers, AdminUsersQuery } from '../types/admin'
 import type { FinanceSnapshot } from '../types/finance'
 const rawQuery = fetchBaseQuery({ baseUrl: '/api', credentials: 'include', prepareHeaders(headers, { getState }) {
   const token = (getState() as { auth: AuthState }).auth.session?.accessToken
@@ -122,7 +123,13 @@ export const taskApi = createApi({ reducerPath: 'api', baseQuery, tagTypes: ['Ta
   refresh: builder.mutation<Session, void>({ query: () => ({ url: '/auth/refresh', method: 'POST' }) }),
   logout: builder.mutation<void, void>({ query: () => ({ url: '/auth/logout', method: 'POST' }) }),
   profile: builder.query<Profile, void>({ query: () => '/account', providesTags: ['Profile'] }),
-  updateProfile: builder.mutation<Profile, Partial<Omit<Profile, 'email' | 'theme'> & { theme: 'light' | 'dark' }>>({
+  adminOverview: builder.query<AdminOverview, 30 | 90>({
+    query: days => ({ url: '/admin/overview', params: { days } }), keepUnusedDataFor: 0,
+  }),
+  adminUsers: builder.query<AdminUsers, AdminUsersQuery>({
+    query: params => ({ url: '/admin/users', params }), keepUnusedDataFor: 0,
+  }),
+  updateProfile: builder.mutation<Profile, Partial<Omit<Profile, 'email' | 'theme' | 'role'> & { theme: 'light' | 'dark' }>>({
     query: body => ({ url: '/account', method: 'PATCH', body }),
     invalidatesTags: result => result ? ['Profile'] : [],
   }),

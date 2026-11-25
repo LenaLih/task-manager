@@ -15,6 +15,7 @@ import { addPasswordResetRoutes, emailInput, passwordInput } from './password-re
 import type { SendResetMail } from './password-reset.js'
 import { addAccountRoutes } from './account.js'
 import { addFinanceRoutes } from './finance.js'
+import { addAdminRoutes } from './admin.js'
 import { tasksCsv } from './task-export.js'
 
 export interface Config {
@@ -149,6 +150,11 @@ export function createApp(config: Config, pool: Pool) {
       'INSERT INTO public.sessions (hash, user_id, expires, id, created_at, device) VALUES ($1, $2, $3, $4, $5, $6)',
       [hash(refresh), user.id, now + 7 * 86400000, id, createdAt, device],
     )
+    await client.query(
+      `UPDATE public.users SET last_active_at = now() WHERE id = $1
+       AND (last_active_at IS NULL OR last_active_at < now() - interval '1 hour')`,
+      [user.id],
+    )
     return { refresh, accessToken, user }
   }
 
@@ -275,7 +281,7 @@ export function createApp(config: Config, pool: Pool) {
     res.clearCookie('refreshToken', cookie).status(204).end()
   })
 
-  app.use(['/api/tasks', '/api/projects', '/api/analytics', '/api/account', '/api/finance'], async (req, res, next) => {
+  app.use(['/api/tasks', '/api/projects', '/api/analytics', '/api/account', '/api/finance', '/api/admin'], async (req, res, next) => {
     try {
       const token = req.get('authorization')?.match(/^Bearer (.+)$/)?.[1]
       if (!token) throw new Error('Missing token')
@@ -303,6 +309,7 @@ export function createApp(config: Config, pool: Pool) {
   addProjectRoutes(app, pool)
   addFinanceRoutes(app, pool)
   addAnalyticsRoutes(app, pool)
+  addAdminRoutes(app, pool)
 
   app.get('/api/tasks', async (_req, res) => {
     const { rows } = await pool.query<TaskRow>(
