@@ -98,7 +98,7 @@ test('admin dashboard uses PostgreSQL and supports both themes', async ({ page }
   const adminLink = page.getByRole('link', { name: 'Администрирование' })
   await expect(adminLink).toHaveCount(0)
   await page.goto('/admin')
-  await expect(page.getByRole('alert')).toHaveText('Доступ разрешён только администраторам.')
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Доступ разрешён только администраторам.')
 
   const pool = await prepareDatabase()
   try {
