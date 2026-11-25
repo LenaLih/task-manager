@@ -85,7 +85,9 @@ export default function AdminDashboard() {
       {users.isError ? <ErrorState message="Не удалось загрузить пользователей." retryLabel="Повторить"
         pending={users.isFetching} onRetry={users.refetch} /> : !list ? <p role="status">Загружаем пользователей…</p> : <>
         <p className="admin-note">Найдено · {number.format(list.total)}. Даты указаны в UTC.</p>
-        {list.users.length ? <div className="admin-table-scroll" role="region" aria-label="Таблица пользователей" tabIndex={0}>
+        {list.users.length ? <>
+        <p className="admin-note admin-scroll-hint">Прокрутите таблицу вправо, чтобы увидеть все столбцы.</p>
+        <div className="admin-table-scroll" role="region" aria-label="Таблица пользователей" tabIndex={0}>
           <table className="admin-table"><thead><tr>{columns.map(([field, label]) =>
             <th key={field} scope="col" aria-sort={sort === field ? direction === 'asc' ? 'ascending' : 'descending' : undefined}>
               <button type="button" onClick={() => {
@@ -97,7 +99,7 @@ export default function AdminDashboard() {
             <tbody>{list.users.map(user => <tr key={user.email}>{columns.map(([field]) =>
               <td key={field}>{display(user, field)}</td>)}</tr>)}</tbody>
           </table>
-        </div> : <p>Пользователи не найдены.</p>}
+        </div></> : <p>Пользователи не найдены.</p>}
         {(pages > 1 || page > 1) && <div className="admin-pagination">
           <button type="button" disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button>
           <span>{page} / {pages}</span>

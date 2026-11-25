@@ -118,12 +118,23 @@ test('admin dashboard uses PostgreSQL and supports both themes', async ({ page }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       await page.evaluate(() => window.innerWidth),
     )
+    const tableRegion = page.getByRole('region', { name: 'Таблица пользователей' })
+    if (info.project.name === 'desktop-chromium') {
+      expect(await tableRegion.evaluate(region => region.scrollWidth)).toBeLessThanOrEqual(
+        await tableRegion.evaluate(region => region.clientWidth),
+      )
+    } else {
+      await tableRegion.evaluate(region => { region.scrollLeft = region.scrollWidth })
+      expect(await tableRegion.evaluate(region => region.scrollLeft)).toBeGreaterThan(0)
+      await tableRegion.evaluate(region => { region.scrollLeft = 0 })
+    }
     await page.screenshot({ path: info.outputPath('admin-light.png'), fullPage: true })
     await page.getByRole('button', { name: 'Тёмная тема' }).click()
     await expect(page.locator('.work-shell')).toHaveAttribute('data-theme', 'dark')
     await page.screenshot({ path: info.outputPath('admin-dark.png'), fullPage: true })
     await page.getByRole('link', { name: 'Аналитика' }).click()
     await expect(page.getByRole('heading', { name: 'Аналитика' })).toBeVisible()
+    await expect(page.getByText('Создано за период', { exact: true })).toBeVisible()
     await page.screenshot({ path: info.outputPath('analytics-dark.png'), fullPage: true })
   } finally {
     await pool.query("UPDATE public.users SET role = 'user' WHERE email = $1", [email])
