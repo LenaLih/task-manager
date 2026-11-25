@@ -11,6 +11,7 @@ if (process.env.NODE_ENV === 'production' && apiOrigin !== 'http://127.0.0.1:300
 const nextConfig: NextConfig = {
   distDir: process.env.NEXT_DIST_DIR ?? '.next',
   typescript: { tsconfigPath: 'tsconfig.next.json' },
+  ...(process.env.NEXT_BUILD_CPUS === '1' && { experimental: { cpus: 1 } }),
   async headers() {
     return [{
       source: '/reset-password',
