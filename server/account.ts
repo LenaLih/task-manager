@@ -8,7 +8,7 @@ import { withTransaction } from './db.js'
 import { emailInput, passwordInput } from './password-reset.js'
 import type { SendResetMail } from './password-reset.js'
 
-const columns = 'name, email, theme, reminder_days AS "reminderDays"'
+const columns = 'name, email, theme, reminder_days AS "reminderDays", role'
 const preferences = z.object({
   name: z.string().trim().max(100).optional(),
   theme: z.enum(['light', 'dark']).optional(),

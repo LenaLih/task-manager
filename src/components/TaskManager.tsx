@@ -34,10 +34,12 @@ import { AccountSettings } from './AccountSettings'
 import { FinanceWorkspace } from './FinanceWorkspace'
 import { CommandPalette } from './CommandPalette'
 import { SavedFilters } from './SavedFilters'
+import AdminDashboard from './AdminDashboard'
 import { localDay } from '../types/planning'
 import { upcomingTasks } from '../types/workspace'
 
 const themeKey = 'yasno-work-theme'
+const adminSection = ['Администрирование', '/admin', '/admin'] as const
 const sections = [
   ['Обзор', '/#overview', '/'], ['Мои задачи', '/tasks', '/tasks'], ['Проекты', '/projects', '/projects'],
   ['Календарь', '/calendar', '/calendar'], ['Аналитика', '/analytics', '/analytics'],
@@ -57,7 +59,8 @@ function readTheme(): 'dark' | 'light' {
 }
 function defaultTheme() { return 'light' as const }
 
-function TaskManager({ directory = false, projectId, tasksOnly = false, planning, settings = false, taskId, finance = false }: {
+function TaskManager({ directory = false, projectId, tasksOnly = false, planning, settings = false, taskId, finance = false, admin = false }: {
+  admin?: boolean
   directory?: boolean
   projectId?: string
   tasksOnly?: boolean
@@ -83,13 +86,14 @@ function TaskManager({ directory = false, projectId, tasksOnly = false, planning
   const [retryingTasks, setRetryingTasks] = useState(false)
   const [busy, setBusy] = useState<Set<Task['id']>>(new Set())
   const { initialized, session } = useAppSelector((state) => state.auth)
-  const profile = useProfileQuery(undefined, { skip: !session })
+  const profile = useProfileQuery(undefined, { skip: !session, refetchOnMountOrArgChange: true })
+  const isAdmin = profile.data?.role === 'admin'
   const [updateProfile, themeState] = useUpdateProfileMutation()
   const theme = profile.data?.theme ?? localTheme
   const [view, setView] = useTaskViewPreference(session?.user.id)
   const { data: allTasks = [], isLoading, isFetching, isError, refetch } = useTasksQuery(
     undefined,
-    { skip: directory || settings || finance || !!taskId || planning === 'analytics' || !initialized || !session, refetchOnMountOrArgChange: true },
+    { skip: admin || directory || settings || finance || !!taskId || planning === 'analytics' || !initialized || !session, refetchOnMountOrArgChange: true },
   )
   const project = useProjectQuery(projectId ?? '', { skip: !projectId })
   const directTask = useTaskQuery(taskId ?? '', { skip: !taskId })
@@ -237,8 +241,8 @@ function TaskManager({ directory = false, projectId, tasksOnly = false, planning
   )
   if (sort === 'title') visibleTasks.sort((a, b) => a.title.localeCompare(b.title))
   if (sort === 'deadline') visibleTasks.sort((a, b) => (a.dueOn ?? '9999-12-31').localeCompare(b.dueOn ?? '9999-12-31'))
-  const overview = !tasksOnly && !projectId && !directory && !settings && !finance && !planning && !taskId
-  const activeSection = finance ? '/finance' : settings ? '/settings' : planning ? '/' + planning :
+  const overview = !admin && !tasksOnly && !projectId && !directory && !settings && !finance && !planning && !taskId
+  const activeSection = admin ? '/admin' : finance ? '/finance' : settings ? '/settings' : planning ? '/' + planning :
     projectId || directory ? '/projects' : tasksOnly || taskId ? '/tasks' : '/'
   const [today, setToday] = useState(() => localDay())
   useEffect(() => {
@@ -256,7 +260,7 @@ function TaskManager({ directory = false, projectId, tasksOnly = false, planning
           <span>ясно<span className="brand-dot">.</span></span>
         </Link>
         <nav aria-label="Рабочее пространство">
-          {sections.map(([name, href, section]) => <Link key={href} href={href}
+          {(isAdmin ? [...sections, adminSection] : sections).map(([name, href, section]) => <Link key={href} href={href}
             className={section === '/settings' ? 'work-nav-settings' : undefined}
             aria-current={activeSection === section ? 'page' : undefined}>{name}</Link>)}
         </nav>
@@ -273,7 +277,12 @@ function TaskManager({ directory = false, projectId, tasksOnly = false, planning
         </div>
       </aside>
       <main className="work-main">
-        {finance ? <FinanceWorkspace /> : settings ? <AccountSettings theme={theme} /> : taskId ? <section className="task-panel work-settings-card">
+        {admin ? (
+          profile.isLoading ? <p role="status">Проверяем права доступа…</p> :
+            profile.isError ? <ErrorState message="Не удалось проверить права доступа." retryLabel="Повторить"
+              pending={profile.isFetching} onRetry={profile.refetch} /> :
+              isAdmin ? <AdminDashboard /> : <p role="alert">Доступ разрешён только администраторам.</p>
+        ) : finance ? <FinanceWorkspace /> : settings ? <AccountSettings theme={theme} /> : taskId ? <section className="task-panel work-settings-card">
           <Link href="/tasks">К задачам</Link>
           {directTask.isLoading && <p role="status">Загружаем задачу…</p>}
           {directTask.isError && (missingTask

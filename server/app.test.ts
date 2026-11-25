@@ -87,6 +87,49 @@ describe.skipIf(!testUrl)('auth and task API (dedicated PostgreSQL)', { timeout:
     await pool?.end()
   })
 
+  it('protects admin statistics and returns only aggregate and directory fields', async () => {
+    const admin = await register('admin@example.test')
+    const user = await register('user@example.test')
+    const api = request(instance.app)
+    const auth = { type: 'bearer' } as const
+    for (const path of ['/api/admin/overview', '/api/admin/users']) {
+      await api.get(path).expect('Cache-Control', 'no-store').expect(401)
+      await api.get(path).auth(admin.token, auth).expect(403)
+    }
+    await api.patch('/api/account').auth(user.token, auth).set('Origin', config.origin)
+      .send({ name: 'Анна', role: 'admin' }).expect(400)
+    await api.patch('/api/account').auth(user.token, auth).set('Origin', config.origin)
+      .send({ name: 'Анна' }).expect(200)
+    await pool.query("UPDATE public.users SET role = 'admin' WHERE id = $1", [admin.id])
+    await pool.query(`INSERT INTO public.users (id, email, password, registered_at)
+      VALUES ($1, 'legacy@example.test', 'unused', NULL)`, [randomUUID()])
+    await pool.query(`INSERT INTO public.tasks (id, user_id, title, completed, status)
+      VALUES ($1, $2, 'Private task', true, 'done')`, [randomUUID(), user.id])
+    await pool.query(`INSERT INTO public.projects (id, user_id, name)
+      VALUES ($1, $2, 'Private project')`, [randomUUID(), user.id])
+    const overview = await api.get('/api/admin/overview?days=90').auth(admin.token, auth).expect(200)
+    expect(overview.body).toMatchObject({
+      users: 3, registeredToday: 2, registered7: 2, registered30: 2, active7: 2, active30: 2,
+      tasks: 1, completed: 1, projects: 1,
+    })
+    expect(overview.body.registrations).toHaveLength(90)
+    expect(overview.body.registrations.at(-1).count).toBe(2)
+    const first = await api.get('/api/admin/users?sort=tasks&direction=desc&size=1').auth(admin.token, auth).expect(200)
+    expect(first.body).toEqual({ total: 3, users: [{
+      name: 'Анна', email: 'user@example.test', role: 'user', tasks: 1, completed: 1, projects: 1,
+      registeredAt: expect.any(String), registrationKnownBy: null, lastActiveAt: expect.any(String),
+    }] })
+    const second = await api.get('/api/admin/users?sort=email&direction=asc&size=1&page=2').auth(admin.token, auth).expect(200)
+    expect(second.body.users[0]).toMatchObject({ email: 'legacy@example.test', registeredAt: null, lastActiveAt: null })
+    for (const search of ['АННА', 'USER@']) {
+      const matching = await api.get('/api/admin/users').query({ search }).auth(admin.token, auth).expect(200)
+      expect(matching.body).toEqual({ total: 1, users: first.body.users })
+    }
+    await api.get('/api/admin/users?sort=unknown').auth(admin.token, auth).expect(400)
+    await pool.query("UPDATE public.users SET role = 'user' WHERE id = $1", [admin.id])
+    await api.get('/api/admin/overview').auth(admin.token, auth).expect(403)
+  })
+
   it('isolates finance and saves transfers and goal contributions once under concurrent retries', async () => {
     const one = await register()
     const other = await register('finance-other@example.test')
@@ -257,7 +300,7 @@ describe.skipIf(!testUrl)('auth and task API (dedicated PostgreSQL)', { timeout:
     const confirmations = await Promise.all([confirm(next), confirm(next)])
     expect(confirmations.map(response => response.status).sort()).toEqual([200, 400])
     const confirmed = confirmations.find(response => response.status === 200)!
-    expect(confirmed.body).toEqual({ name: '', email: 'new@example.com', theme: null, reminderDays: 0 })
+    expect(confirmed.body).toEqual({ name: '', email: 'new@example.com', theme: null, reminderDays: 0, role: 'user' })
     await request(instance.app).post('/api/auth/login').set('Origin', config.origin)
       .send({ email: 'new@example.com', password }).expect(200)
   })
